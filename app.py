@@ -64,6 +64,49 @@ def init_connection() -> Client:
         
     return create_client(url, key)
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_bat_observations():
+    client = init_connection()
+    all_records = []
+    offset = 0
+    max_rows = 1000
+    
+    while True:
+        try:
+            res = client.table("bat_observations_full").select("*").range(offset, offset + max_rows - 1).execute()
+            if res.data:
+                all_records.extend(res.data)
+            
+            if not res.data or len(res.data) < max_rows:
+                break
+                
+            offset += max_rows
+        except Exception as e:
+            st.error(f"Error carregant dades bat_observations_full: {e}")
+            break
+            
+    if not all_records:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(all_records)
+    
+    # Ensure proper data types
+    if 'observation_date' in df.columns:
+        df['observation_date'] = pd.to_datetime(df['observation_date']).dt.date
+    if 'total_count' in df.columns:
+        df['total_count'] = pd.to_numeric(df['total_count'], errors='coerce').fillna(0)
+    if 'total_buzz' in df.columns:
+        df['total_buzz'] = pd.to_numeric(df['total_buzz'], errors='coerce').fillna(0)
+        
+    if 'temp' in df.columns:
+        df['temp'] = pd.to_numeric(df['temp'], errors='coerce')
+    if 'rel_humidity' in df.columns:
+        df['rel_humidity'] = pd.to_numeric(df['rel_humidity'], errors='coerce')
+    if 'wind_speed' in df.columns:
+        df['wind_speed'] = pd.to_numeric(df['wind_speed'], errors='coerce')
+        
+    return df
+
 def main():
     st.title("Ratpenats al Cap de Creus")
     st.markdown(f"**Port de Desplegament**: `{port}` (Punt per a Cloud Run)")
@@ -77,9 +120,463 @@ def main():
 
     # ---------------- TAB 1: ACCIONS ----------------
     with tab_accions:
-        st.subheader("Àrea d'Accions")
-        st.markdown("Aquesta àrea està reservada per a futures funcionalitats. De moment no hi ha cap acció activa configurada.")
-        st.info("Pots navegar a la pestanya **Estatus** per verificar les mètriques de connectivitat en temps real.")
+        st.header("Anàlisi i Accions: Comptatge i Buzz")
+        st.markdown("Explora els resultats gràfics del comptatge i l'activitat (buzz) segons diferents criteris.")
+        
+        # Carreguem totes les observacions inicials
+        with st.spinner("Carregant dades generals de ratpenats..."):
+            df_full = load_bat_observations()
+            
+        import datetime
+        all_species = sorted(df_full['species'].dropna().unique().tolist()) if not df_full.empty and 'species' in df_full.columns else []
+        all_locations = sorted(df_full['location_name'].dropna().unique().tolist()) if not df_full.empty and 'location_name' in df_full.columns else []
+        
+        min_date_val = df_full['observation_date'].dropna().min() if not df_full.empty and 'observation_date' in df_full.columns else None
+        max_date_val = df_full['observation_date'].dropna().max() if not df_full.empty and 'observation_date' in df_full.columns else None
+        
+        if pd.isna(min_date_val) or pd.isna(max_date_val):
+            min_date_val = datetime.date(2020, 1, 1)
+            max_date_val = datetime.date.today()
+            
+        if min_date_val == max_date_val:
+            min_date_val = min_date_val - datetime.timedelta(days=1)
+            max_date_val = max_date_val + datetime.timedelta(days=1)
+        
+        # --- Àrea 1: Comptatge i Buzz per espècies ---
+        st.subheader("Comptatge i Buzz per espècies")
+        with st.container(border=True):
+            col1_filt, col1_graf = st.columns([1, 3])
+            with col1_filt:
+                st.markdown("##### Paràmetres")
+                sp_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="sp_esp")
+                sp_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="sp_loc")
+                
+                # Utilitzem un slider per seleccionar el rang de dates tal com s'ha demanat
+                sp_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="sp_date_slider")
+                
+                sp_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="sp_vis")
+                if sp_vis_type == "Barres":
+                    sp_bar_metric = st.radio("Mètrica a visualitzar (Barres):", ["Comptatge", "Buzz"], horizontal=True, key="sp_met_bar")
+            
+            with col1_graf:
+                st.markdown("##### Resultat Gràfic")
+                if df_full.empty:
+                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
+                else:
+                    df_sp = df_full.copy()
+                    
+                    # Aplicar filtres
+                    if "Totes" not in sp_esp_sel and sp_esp_sel:
+                        df_sp = df_sp[df_sp['species'].isin(sp_esp_sel)]
+                        
+                    if "Totes" not in sp_loc_sel and sp_loc_sel:
+                        df_sp = df_sp[df_sp['location_name'].isin(sp_loc_sel)]
+                        
+                    start_d, end_d = sp_date_sel
+                    df_sp = df_sp[(df_sp['observation_date'] >= start_d) & (df_sp['observation_date'] <= end_d)]
+                    
+                    if df_sp.empty:
+                        st.info("Cap registre coincideix amb els filtres seleccionats.")
+                    else:
+                        import altair as alt
+                        
+                        if sp_vis_type == "Línies":
+                            # Agrupar dades per espècie
+                            df_sp_grouped = df_sp.groupby("species", as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            # Gràfic base
+                            base = alt.Chart(df_sp_grouped).encode(
+                                x=alt.X('species:N', title='Espècie', axis=alt.Axis(labelAngle=-45, grid=False))
+                            )
+                            
+                            # Línia per total_count (Eix Y esquerra)
+                            line_count = base.mark_line(color='#1f77b4', point=True).encode(
+                                y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
+                            )
+                            
+                            # Línia per total_buzz (Eix Y dreta)
+                            line_buzz = base.mark_line(color='#ff7f0e', point=True).encode(
+                                y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
+                            )
+                            
+                            # Combinem les dues línies amb escales Y independents
+                            chart_sp = alt.layer(line_count, line_buzz).resolve_scale(
+                                y='independent'
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                        else:
+                            # Barres apilades per localització
+                            df_sp_grouped = df_sp.groupby(["species", "location_name"], as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            y_col = 'total_count' if sp_bar_metric == "Comptatge" else 'total_buzz'
+                            y_title = 'Comptatge Total' if sp_bar_metric == "Comptatge" else 'Total Buzz'
+                            
+                            chart_sp = alt.Chart(df_sp_grouped).mark_bar().encode(
+                                x=alt.X('species:N', title='Espècie', axis=alt.Axis(labelAngle=-45, grid=False)),
+                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
+                                color=alt.Color('location_name:N', title='Localització', legend=alt.Legend(orient="bottom", columns=3)),
+                                tooltip=['species:N', 'location_name:N', f'{y_col}:Q']
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                            
+                        st.altair_chart(chart_sp, use_container_width=True)
+
+        # --- Àrea 2: Comptatge i Buzz per localització ---
+        st.subheader("Comptatge i Buzz per localització")
+        with st.container(border=True):
+            col2_filt, col2_graf = st.columns([1, 3])
+            with col2_filt:
+                st.markdown("##### Paràmetres")
+                loc_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="loc_esp")
+                loc_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="loc_loc")
+                loc_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="loc_date_slider")
+                
+                loc_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="loc_vis")
+                if loc_vis_type == "Barres":
+                    loc_bar_metric = st.radio("Mètrica a visualitzar (Barres):", ["Comptatge", "Buzz"], horizontal=True, key="loc_met_bar")
+                    
+            with col2_graf:
+                st.markdown("##### Resultat Gràfic")
+                if df_full.empty:
+                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
+                else:
+                    df_loc = df_full.copy()
+                    
+                    if "Totes" not in loc_esp_sel and loc_esp_sel:
+                        df_loc = df_loc[df_loc['species'].isin(loc_esp_sel)]
+                        
+                    if "Totes" not in loc_loc_sel and loc_loc_sel:
+                        df_loc = df_loc[df_loc['location_name'].isin(loc_loc_sel)]
+                        
+                    start_d, end_d = loc_date_sel
+                    df_loc = df_loc[(df_loc['observation_date'] >= start_d) & (df_loc['observation_date'] <= end_d)]
+                    
+                    if df_loc.empty:
+                        st.info("Cap registre coincideix amb els filtres seleccionats.")
+                    else:
+                        import altair as alt
+                        
+                        if loc_vis_type == "Línies":
+                            df_loc_grouped = df_loc.groupby("location_name", as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            base2 = alt.Chart(df_loc_grouped).encode(
+                                x=alt.X('location_name:N', title='Localització', axis=alt.Axis(labelAngle=-45, grid=False))
+                            )
+                            
+                            line_count2 = base2.mark_line(color='#1f77b4', point=True).encode(
+                                y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
+                            )
+                            
+                            line_buzz2 = base2.mark_line(color='#ff7f0e', point=True).encode(
+                                y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
+                            )
+                            
+                            chart_loc = alt.layer(line_count2, line_buzz2).resolve_scale(
+                                y='independent'
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                        else:
+                            # Barres apilades per espècie
+                            df_loc_grouped = df_loc.groupby(["location_name", "species"], as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            y_col = 'total_count' if loc_bar_metric == "Comptatge" else 'total_buzz'
+                            y_title = 'Comptatge Total' if loc_bar_metric == "Comptatge" else 'Total Buzz'
+                            
+                            chart_loc = alt.Chart(df_loc_grouped).mark_bar().encode(
+                                x=alt.X('location_name:N', title='Localització', axis=alt.Axis(labelAngle=-45, grid=False)),
+                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
+                                color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
+                                tooltip=['location_name:N', 'species:N', f'{y_col}:Q']
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                            
+                        st.altair_chart(chart_loc, use_container_width=True)
+
+        # --- Àrea 3: Comptatge i Buzz per data ---
+        st.subheader("Comptatge i Buzz per data")
+        with st.container(border=True):
+            col3_filt, col3_graf = st.columns([1, 3])
+            with col3_filt:
+                st.markdown("##### Paràmetres")
+                date_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="date_esp")
+                date_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="date_loc")
+                date_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="date_date_slider")
+                
+                date_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="date_vis")
+                if date_vis_type == "Barres":
+                    date_bar_metric = st.radio("Mètrica a visualitzar (Barres):", ["Comptatge", "Buzz"], horizontal=True, key="date_met_bar")
+                    
+            with col3_graf:
+                st.markdown("##### Resultat Gràfic")
+                if df_full.empty:
+                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
+                else:
+                    df_date = df_full.copy()
+                    
+                    if "Totes" not in date_esp_sel and date_esp_sel:
+                        df_date = df_date[df_date['species'].isin(date_esp_sel)]
+                        
+                    if "Totes" not in date_loc_sel and date_loc_sel:
+                        df_date = df_date[df_date['location_name'].isin(date_loc_sel)]
+                        
+                    start_d, end_d = date_date_sel
+                    df_date = df_date[(df_date['observation_date'] >= start_d) & (df_date['observation_date'] <= end_d)]
+                    
+                    if df_date.empty:
+                        st.info("Cap registre coincideix amb els filtres seleccionats.")
+                    else:
+                        # Convertim observation_date a datetime i agrupem per l'inici del mes per a tenir-ho ordenat temporalment
+                        df_date['obs_dt'] = pd.to_datetime(df_date['observation_date'])
+                        df_date['month_year'] = df_date['obs_dt'].dt.to_period('M').dt.to_timestamp()
+                        
+                        import altair as alt
+                        
+                        if date_vis_type == "Línies":
+                            df_date_grouped = df_date.groupby("month_year", as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            base3 = alt.Chart(df_date_grouped).encode(
+                                x=alt.X('month_year:T', title='Data (Mes - Any)', axis=alt.Axis(format='%m-%Y', labelAngle=-45, grid=False, tickCount='month'))
+                            )
+                            
+                            line_count3 = base3.mark_line(color='#1f77b4', point=True).encode(
+                                y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
+                            )
+                            
+                            line_buzz3 = base3.mark_line(color='#ff7f0e', point=True).encode(
+                                y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
+                            )
+                            
+                            chart_date = alt.layer(line_count3, line_buzz3).resolve_scale(
+                                y='independent'
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                        else:
+                            # Barres apilades per espècie
+                            df_date_grouped = df_date.groupby(["month_year", "species"], as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            y_col = 'total_count' if date_bar_metric == "Comptatge" else 'total_buzz'
+                            y_title = 'Comptatge Total' if date_bar_metric == "Comptatge" else 'Total Buzz'
+                            
+                            # Forcem l'amplada de la barra amb 'size' perquè en l'eix temporal no es vegi com una línia
+                            chart_date = alt.Chart(df_date_grouped).mark_bar(size=35).encode(
+                                x=alt.X('month_year:T', title='Data (Mes - Any)', axis=alt.Axis(format='%m-%Y', labelAngle=-45, grid=False, tickCount='month')),
+                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
+                                color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
+                                tooltip=['month_year:T', 'species:N', f'{y_col}:Q']
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                            
+                        st.altair_chart(chart_date, use_container_width=True)
+
+        # --- Àrea 4: Comptatge i Buzz per franja horària ---
+        st.subheader("Comptatge i Buzz per franja horària")
+        with st.container(border=True):
+            col4_filt, col4_graf = st.columns([1, 3])
+            with col4_filt:
+                st.markdown("##### Paràmetres")
+                hour_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="hour_esp")
+                hour_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="hour_loc")
+                hour_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="hour_date_slider")
+                
+                hour_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="hour_vis")
+                if hour_vis_type == "Barres":
+                    hour_bar_metric = st.radio("Mètrica a visualitzar (Barres):", ["Comptatge", "Buzz"], horizontal=True, key="hour_met_bar")
+                    
+            with col4_graf:
+                st.markdown("##### Resultat Gràfic")
+                if df_full.empty:
+                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
+                else:
+                    df_hour = df_full.copy()
+                    
+                    if "Totes" not in hour_esp_sel and hour_esp_sel:
+                        df_hour = df_hour[df_hour['species'].isin(hour_esp_sel)]
+                        
+                    if "Totes" not in hour_loc_sel and hour_loc_sel:
+                        df_hour = df_hour[df_hour['location_name'].isin(hour_loc_sel)]
+                        
+                    start_d, end_d = hour_date_sel
+                    df_hour = df_hour[(df_hour['observation_date'] >= start_d) & (df_hour['observation_date'] <= end_d)]
+                    
+                    if df_hour.empty:
+                        st.info("Cap registre coincideix amb els filtres seleccionats.")
+                    else:
+                        import altair as alt
+                        
+                        # Assegurar que l'hora sigui string per mostrar-la com a categoria seqüencial (ordinal)
+                        if 'observation_hour' in df_hour.columns:
+                            # Omplim amb zeros a l'esquerra per garantir l'ordre correcte (ex: '09', '10')
+                            df_hour['hora'] = df_hour['observation_hour'].astype(str).str.zfill(2)
+                        else:
+                            df_hour['hora'] = 'Desconeguda'
+                            
+                        # Ordre nocturn per a l'eix X (de 16:00 a 15:00)
+                        ordre_nocturn = [str(i).zfill(2) for i in range(16, 24)] + [str(i).zfill(2) for i in range(0, 16)]
+                            
+                        if hour_vis_type == "Línies":
+                            df_hour_grouped = df_hour.groupby("hora", as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            base4 = alt.Chart(df_hour_grouped).encode(
+                                x=alt.X('hora:O', title='Franja Horària (h)', sort=ordre_nocturn, axis=alt.Axis(labelAngle=0, grid=False))
+                            )
+                            
+                            line_count4 = base4.mark_line(color='#1f77b4', point=True).encode(
+                                y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
+                            )
+                            
+                            line_buzz4 = base4.mark_line(color='#ff7f0e', point=True).encode(
+                                y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
+                            )
+                            
+                            chart_hour = alt.layer(line_count4, line_buzz4).resolve_scale(
+                                y='independent'
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                        else:
+                            # Barres apilades per espècie
+                            df_hour_grouped = df_hour.groupby(["hora", "species"], as_index=False)[["total_count", "total_buzz"]].sum()
+                            
+                            y_col = 'total_count' if hour_bar_metric == "Comptatge" else 'total_buzz'
+                            y_title = 'Comptatge Total' if hour_bar_metric == "Comptatge" else 'Total Buzz'
+                            
+                            # Size 20-25 sol quedar molt bé en gràfics ordinals de 24 hores
+                            chart_hour = alt.Chart(df_hour_grouped).mark_bar(size=22).encode(
+                                x=alt.X('hora:O', title='Franja Horària (h)', sort=ordre_nocturn, axis=alt.Axis(labelAngle=0, grid=False)),
+                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
+                                color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
+                                tooltip=['hora:O', 'species:N', f'{y_col}:Q']
+                            ).properties(
+                                height=400
+                            ).configure_axis(
+                                grid=False
+                            )
+                            
+                        st.altair_chart(chart_hour, use_container_width=True)
+
+        # --- Àrea 5: Regressió Linial ---
+        st.subheader("Anàlisi de Regressió Linial")
+        with st.container(border=True):
+            col5_filt, col5_graf = st.columns([1, 3])
+            with col5_filt:
+                st.markdown("##### Paràmetres")
+                reg_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="reg_esp")
+                reg_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="reg_loc")
+                reg_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="reg_date_slider")
+                
+                st.markdown("##### Variables de Regressió")
+                reg_y_var = st.selectbox("Variable Eix Y (Dependent):", ["Comptatge", "Buzz"], key="reg_y_var")
+                
+                # Mapa de variables climàtiques per l'eix X
+                clim_vars_ca = {
+                    "Temperatura (temp)": "temp",
+                    "Humitat (rel_humidity)": "rel_humidity",
+                    "Vent (wind_speed)": "wind_speed"
+                }
+                reg_x_var_ca = st.selectbox("Variable Eix X (Independent):", list(clim_vars_ca.keys()), key="reg_x_var")
+                reg_x_col = clim_vars_ca[reg_x_var_ca]
+                
+                st.markdown("##### Opcions d'Anàlisi")
+                reg_outliers = st.checkbox("Mostra tots els punts (Inclou Outliers)", value=True, key="reg_outliers")
+                
+            with col5_graf:
+                st.markdown("##### Resultat Gràfic i Estadístiques")
+                if df_full.empty:
+                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
+                else:
+                    df_reg = df_full.copy()
+                    
+                    if "Totes" not in reg_esp_sel and reg_esp_sel:
+                        df_reg = df_reg[df_reg['species'].isin(reg_esp_sel)]
+                        
+                    if "Totes" not in reg_loc_sel and reg_loc_sel:
+                        df_reg = df_reg[df_reg['location_name'].isin(reg_loc_sel)]
+                        
+                    start_d, end_d = reg_date_sel
+                    df_reg = df_reg[(df_reg['observation_date'] >= start_d) & (df_reg['observation_date'] <= end_d)]
+                    
+                    y_col = 'total_count' if reg_y_var == "Comptatge" else 'total_buzz'
+                    x_col = reg_x_col
+                    
+                    # Eliminar files on X o Y siguin NaN per no falsejar la regressió
+                    df_reg_clean = df_reg.dropna(subset=[x_col, y_col]).copy()
+                    
+                    if not reg_outliers and not df_reg_clean.empty:
+                        # Mètode IQR (Interquartile Range) per netejar outliers en ambdues variables
+                        for col in [x_col, y_col]:
+                            Q1 = df_reg_clean[col].quantile(0.25)
+                            Q3 = df_reg_clean[col].quantile(0.75)
+                            IQR = Q3 - Q1
+                            lower_bound = Q1 - 1.5 * IQR
+                            upper_bound = Q3 + 1.5 * IQR
+                            df_reg_clean = df_reg_clean[(df_reg_clean[col] >= lower_bound) & (df_reg_clean[col] <= upper_bound)]
+
+                    
+                    if df_reg_clean.empty or len(df_reg_clean) < 2:
+                        st.info("No hi ha prou dades vàlides per aquesta combinació (mínim 2 punts amb valors no nuls).")
+                    else:
+                        import altair as alt
+                        import numpy as np
+                        
+                        # Càlcul de la regressió lineal
+                        x_vals = df_reg_clean[x_col].values
+                        y_vals = df_reg_clean[y_col].values
+                        
+                        # polyfit grau 1 retorna [pendent, intercept]
+                        m, b = np.polyfit(x_vals, y_vals, 1)
+                        
+                        # R2
+                        corr_matrix = np.corrcoef(x_vals, y_vals)
+                        corr = corr_matrix[0, 1]
+                        r_squared = corr ** 2
+                        
+                        # Afegim la columna de predicció per pintar la línia
+                        df_reg_clean['prediction'] = m * df_reg_clean[x_col] + b
+                        
+                        # Mostrem els coeficients en caixes de mètriques
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Pendent (m)", f"{m:.4f}")
+                        c2.metric("Intercepció (b)", f"{b:.4f}")
+                        c3.metric("Coef. Determinació (R²)", f"{r_squared:.4f}")
+                        
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        
+                        # Gràfic de dispersió (Scatter)
+                        scatter = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
+                            x=alt.X(f'{x_col}:Q', title=reg_x_var_ca, scale=alt.Scale(zero=False)),
+                            y=alt.Y(f'{y_col}:Q', title=reg_y_var),
+                            tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
+                        )
+                        
+                        # Línia de regressió
+                        regression_line = alt.Chart(df_reg_clean).mark_line(color='red', size=3).encode(
+                            x=f'{x_col}:Q',
+                            y='prediction:Q'
+                        )
+                        
+                        chart_reg = (scatter + regression_line).properties(height=350)
+                        
+                        st.altair_chart(chart_reg, use_container_width=True)
 
     # ---------------- TAB 2: ESTATUS ----------------
     with tab_estatus:
