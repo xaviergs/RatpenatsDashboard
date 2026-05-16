@@ -190,8 +190,18 @@ def main():
                 sp_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="sp_esp")
                 sp_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="sp_loc")
                 
-                # Utilitzem un slider per seleccionar el rang de dates tal com s'ha demanat
-                sp_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="sp_date_slider")
+                # Selector de dates
+                sp_one_day = st.checkbox("Seleccionar només un dia", key="sp_one_day")
+                if sp_one_day:
+                    _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="sp_date")
+                    sp_date_sel = (_d, _d)
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _s = st.date_input("Data inicial:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="sp_start")
+                    with c2:
+                        _e = st.date_input("Data final:", value=max_date_val, min_value=min_date_val, max_value=max_date_val, key="sp_end")
+                    sp_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 sp_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="sp_vis")
                 
@@ -267,7 +277,18 @@ def main():
                 st.markdown("##### Paràmetres")
                 loc_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="loc_esp")
                 loc_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="loc_loc")
-                loc_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="loc_date_slider")
+                # Selector de dates
+                loc_one_day = st.checkbox("Seleccionar només un dia", key="loc_one_day")
+                if loc_one_day:
+                    _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="loc_date")
+                    loc_date_sel = (_d, _d)
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _s = st.date_input("Data inicial:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="loc_start")
+                    with c2:
+                        _e = st.date_input("Data final:", value=max_date_val, min_value=min_date_val, max_value=max_date_val, key="loc_end")
+                    loc_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 loc_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="loc_vis")
                 
@@ -343,7 +364,18 @@ def main():
                 st.markdown("##### Paràmetres")
                 date_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="date_esp")
                 date_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="date_loc")
-                date_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="date_date_slider")
+                # Selector de dates
+                date_one_day = st.checkbox("Seleccionar només un dia", key="date_one_day")
+                if date_one_day:
+                    _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="date_date")
+                    date_date_sel = (_d, _d)
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _s = st.date_input("Data inicial:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="date_start")
+                    with c2:
+                        _e = st.date_input("Data final:", value=max_date_val, min_value=min_date_val, max_value=max_date_val, key="date_end")
+                    date_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 date_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="date_vis")
                 
@@ -424,7 +456,18 @@ def main():
                 st.markdown("##### Paràmetres")
                 hour_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="hour_esp")
                 hour_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="hour_loc")
-                hour_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="hour_date_slider")
+                # Selector de dates
+                hour_one_day = st.checkbox("Seleccionar només un dia", key="hour_one_day")
+                if hour_one_day:
+                    _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="hour_date")
+                    hour_date_sel = (_d, _d)
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _s = st.date_input("Data inicial:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="hour_start")
+                    with c2:
+                        _e = st.date_input("Data final:", value=max_date_val, min_value=min_date_val, max_value=max_date_val, key="hour_end")
+                    hour_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 hour_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="hour_vis")
                 
@@ -509,7 +552,18 @@ def main():
                 st.markdown("##### Paràmetres")
                 reg_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="reg_esp")
                 reg_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="reg_loc")
-                reg_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="reg_date_slider")
+                # Selector de dates
+                reg_one_day = st.checkbox("Seleccionar només un dia", key="reg_one_day")
+                if reg_one_day:
+                    _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_date")
+                    reg_date_sel = (_d, _d)
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _s = st.date_input("Data inicial:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_start")
+                    with c2:
+                        _e = st.date_input("Data final:", value=max_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_end")
+                    reg_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 st.markdown("##### Variables de Regressió")
                 reg_y_var = st.selectbox("Variable Eix Y (Dependent):", list(METRIC_COLS.keys()), key="reg_y_var")
