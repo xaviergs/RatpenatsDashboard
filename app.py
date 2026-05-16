@@ -155,7 +155,7 @@ def main():
     supabase_client = init_connection()
     
     # Create Layout Tabs
-    tab_accions, tab_estatus = st.tabs(["🚀 Accions", "📊 Estatus"])
+    tab_accions, tab_estatus, tab_syllabus = st.tabs(["🚀 Accions", "📊 Estatus", "📖 Syllabus"])
 
     # ---------------- TAB 1: ACCIONS ----------------
     with tab_accions:
@@ -833,6 +833,51 @@ def main():
                 st.error(f"Error processant les columnes per crear la gràfica (verifica els noms de la vista): {e}")
         else:
             st.warning("No s'han pogut carregar les dades o bé la vista està buida.")
+
+    # ---------------- TAB 3: SYLLABUS / METODOLOGIA ----------------
+    with tab_syllabus:
+        st.header("Syllabus i Metodologia de Càlcul")
+        st.markdown("Aquesta secció detalla la naturalesa de les dades recollides i com es calculen els indicadors d'activitat de l'aplicació per garantir la rigorositat i transparència científica.")
+        
+        st.subheader("1. Diccionari de Dades (Camps Principals)")
+        st.markdown("""
+        Cada registre de la base de dades representa un interval de gravació i procés acústic automàtic de l'estació autònoma.
+        
+        - **`observation_date`** / **`observation_hour`**: Marca temporal i franja horària associada a la gravació.
+        - **`location_name`**: Nom del lloc de mostreig on està situada l'estació.
+        - **`species`**: Espècie (o grup fònic) identificada pel programari d'anàlisi automàtic.
+        - **`total_count` (Comptatge)**: Sumatori d'identificacions positives d'una espècie (contactes o "passes" acústics purs).
+        - **`total_buzz` (Buzz)**: Sumatori d'identificacions de "feeding buzzes", un patró acústic accelerat emès en la fase final de captura d'un insecte. Representa exclusivament activitat de caça.
+        - **Variables atmosfèriques** (`temp`, `rel_humidity`, `wind_speed`): Dades de l'entorn vinculades a l'interval de mostreig mitjançant estacions properes.
+        """)
+        
+        st.subheader("2. Esforç de Mostreig ($N$)")
+        st.markdown("""
+        Per estandarditzar i comparar els índexs, l'aplicació mesura de manera dinàmica l'esforç d'observació efectiu ($N$).
+        Donat que el detector només es dispara amb el so, s'extreu el temps complet de l'actuació de cada sessió:
+        
+        1. **Agrupació:** S'identifiquen les hores úniques de sessió (per localització i data).
+        2. **Multiplicador:** S'assumeix una resolució o granularitat per cada hora (actualment establert a **60** intervals hipotètics, corresponent a 1 minut d'observació base).
+        3. **Fórmula Base:**  $N = \text{Hores Úniques} \\times 60$.
+        """)
+        
+        st.subheader("3. Indicadors Ecològics d'Activitat")
+        st.markdown("""
+        Per entendre l'ús real de l'hàbitat es fan servir tres índexs acústics que es calculen de forma totalment reactiva en aplicar filtres en la vista d'Accions. Això permet que l'estimació no variï artificialment segons on tallem les consultes temporals.
+        
+        #### OA (Ocupació Acústica)
+        Indica el grau d'activitat general d'ús de l'espai (vol de desplaçament, navegació, caça) per unitat d'esforç.
+        $$ OA = \\frac{\\text{Comptatge Total (Count)}}{N} $$
+        
+        #### OT (Ocupació Tròfica)
+        Indica el grau d'activitat estrictament de caça per unitat d'esforç. És determinant per avaluar si un punt concret no és només una zona de pas sinó una autèntica zona d'alimentació establerta.
+        $$ OT = \\frac{\\text{Total Buzz}}{N} $$
+        
+        #### IA (Intensitat Depredadora)
+        És la proporció d'esforç de caça sobre l'activitat general de pas. Un IA alt indica que l'hàbitat s'utilitza majoritàriament per alimentar-se, permetent destacar zones vitals inclús si l'abundància numèrica (OA) sembla baixa.
+        $$ IA = \\frac{\\text{Total Buzz}}{\\text{Comptatge Total (Count)}} $$
+        *(Es protegeix la divisió per zero: si no hi ha activitat registrada o `Count` = 0, l'índex $IA$ és $0.0$).*
+        """)
 
 if __name__ == "__main__":
     main()
