@@ -46,6 +46,11 @@ st.markdown("""
     div.stButton > button:hover {
         transform: scale(1.02);
     }
+    /* Tab labels enhancements */
+    button[data-baseweb="tab"] p {
+        font-size: 1.25rem !important;
+        font-weight: 600 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
