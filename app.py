@@ -196,8 +196,10 @@ def main():
                 sp_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="sp_loc")
                 
                 # Selector de dates
-                sp_one_day = st.checkbox("Seleccionar només un dia", key="sp_one_day")
-                if sp_one_day:
+                sp_date_method = st.radio("Mètode de selecció de dates:", ["Desplaçador (Slider)", "Calendari Manual", "Només un dia"], horizontal=True, key="sp_date_method")
+                if sp_date_method == "Desplaçador (Slider)":
+                    sp_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="sp_date_slider")
+                elif sp_date_method == "Només un dia":
                     _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="sp_date")
                     sp_date_sel = (_d, _d)
                 else:
@@ -283,8 +285,10 @@ def main():
                 loc_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="loc_esp")
                 loc_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="loc_loc")
                 # Selector de dates
-                loc_one_day = st.checkbox("Seleccionar només un dia", key="loc_one_day")
-                if loc_one_day:
+                loc_date_method = st.radio("Mètode de selecció de dates:", ["Desplaçador (Slider)", "Calendari Manual", "Només un dia"], horizontal=True, key="loc_date_method")
+                if loc_date_method == "Desplaçador (Slider)":
+                    loc_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="loc_date_slider")
+                elif loc_date_method == "Només un dia":
                     _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="loc_date")
                     loc_date_sel = (_d, _d)
                 else:
@@ -370,8 +374,10 @@ def main():
                 date_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="date_esp")
                 date_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="date_loc")
                 # Selector de dates
-                date_one_day = st.checkbox("Seleccionar només un dia", key="date_one_day")
-                if date_one_day:
+                date_date_method = st.radio("Mètode de selecció de dates:", ["Desplaçador (Slider)", "Calendari Manual", "Només un dia"], horizontal=True, key="date_date_method")
+                if date_date_method == "Desplaçador (Slider)":
+                    date_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="date_date_slider")
+                elif date_date_method == "Només un dia":
                     _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="date_date")
                     date_date_sel = (_d, _d)
                 else:
@@ -462,8 +468,10 @@ def main():
                 hour_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="hour_esp")
                 hour_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="hour_loc")
                 # Selector de dates
-                hour_one_day = st.checkbox("Seleccionar només un dia", key="hour_one_day")
-                if hour_one_day:
+                hour_date_method = st.radio("Mètode de selecció de dates:", ["Desplaçador (Slider)", "Calendari Manual", "Només un dia"], horizontal=True, key="hour_date_method")
+                if hour_date_method == "Desplaçador (Slider)":
+                    hour_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="hour_date_slider")
+                elif hour_date_method == "Només un dia":
                     _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="hour_date")
                     hour_date_sel = (_d, _d)
                 else:
@@ -558,8 +566,10 @@ def main():
                 reg_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="reg_esp")
                 reg_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="reg_loc")
                 # Selector de dates
-                reg_one_day = st.checkbox("Seleccionar només un dia", key="reg_one_day")
-                if reg_one_day:
+                reg_date_method = st.radio("Mètode de selecció de dates:", ["Desplaçador (Slider)", "Calendari Manual", "Només un dia"], horizontal=True, key="reg_date_method")
+                if reg_date_method == "Desplaçador (Slider)":
+                    reg_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="reg_date_slider")
+                elif reg_date_method == "Només un dia":
                     _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_date")
                     reg_date_sel = (_d, _d)
                 else:
