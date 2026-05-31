@@ -1,0 +1,218 @@
+{
+  "project_name": "Ratpenats al Cap de Creus",
+  "version": "1.1.0",
+  "description": "Model semàntic de referència i sinònims per ajudar el model de llenguatge Gemini a realitzar consultes correctes sobre les observacions de ratpenats.",
+
+  "locations_catalogue": {
+    "description": "Catàleg complet de totes les localitzacions del projecte agrupades per zona geogràfica. Els noms que apareixen a la base de dades (camp display_name) estan indicats a 'db_name'. Els sinònims permeten a l'usuari demanar-ho de forma col·loquial.",
+    "zones": {
+      "Cap de Creus - Roses": {
+        "db_names": ["Montjoi", "Mas Marés", "Norfeu", "Ponac", "Tamariua", "Canadell"],
+        "synonyms": {
+          "montjoi": "Montjoi",
+          "cala montjoi": "Montjoi",
+          "mas marés": "Mas Marés",
+          "mas mares": "Mas Marés",
+          "norfeu": "Norfeu",
+          "cap norfeu": "Norfeu",
+          "ponac": "Ponac",
+          "tamariua": "Tamariua",
+          "cala tamariua": "Tamariua",
+          "canadell": "Canadell",
+          "cala canadell": "Canadell"
+        }
+      },
+      "Cap de Creus - Llança": {
+        "db_names": ["La Valleta"],
+        "synonyms": {
+          "la valleta": "La Valleta",
+          "valleta": "La Valleta",
+          "llança": "La Valleta"
+        }
+      },
+      "Cap de Creus - Espolla (interior)": {
+        "db_names": ["Comes Tortes", "Mas Margall", "L'Olivar", "Coma de l'Infern"],
+        "synonyms": {
+          "comes tortes": "Comes Tortes",
+          "mas margall": "Mas Margall",
+          "l'olivar": "L'Olivar",
+          "olivar": "L'Olivar",
+          "coma de l'infern": "Coma de l'Infern",
+          "coma infern": "Coma de l'Infern",
+          "infern": "Coma de l'Infern"
+        }
+      },
+      "Aiguamolls de l'Empordà": {
+        "db_names": ["Estanys de Vilaüt/Pau", "La Rubina", "Tres Ponts", "Riu Tec", "Closes de Sant Joan", "Corral de les Guatlles", "Estany de Sant Joan", "Els Lliris Grocs"],
+        "synonyms": {
+          "vilaüt": "Estanys de Vilaüt/Pau",
+          "vilaut": "Estanys de Vilaüt/Pau",
+          "estanys de pau": "Estanys de Vilaüt/Pau",
+          "estanys de vilaüt": "Estanys de Vilaüt/Pau",
+          "la rubina": "La Rubina",
+          "rubina": "La Rubina",
+          "tres ponts": "Tres Ponts",
+          "riu tec": "Riu Tec",
+          "tec": "Riu Tec",
+          "closes de sant joan": "Closes de Sant Joan",
+          "closes sant joan": "Closes de Sant Joan",
+          "corral de les guatlles": "Corral de les Guatlles",
+          "guatlles": "Corral de les Guatlles",
+          "estany de sant joan": "Estany de Sant Joan",
+          "estany sant joan": "Estany de Sant Joan",
+          "els lliris grocs": "Els Lliris Grocs",
+          "lliris grocs": "Els Lliris Grocs",
+          "lliris": "Els Lliris Grocs",
+          "aiguamolls": null
+        }
+      },
+      "Riu Muga": {
+        "db_names": ["Muga (Vilatenim-Castelló)", "Muga (El Trabuc)", "Muga (La Resclosa)", "Muga (L'Asil)"],
+        "synonyms": {
+          "muga": null,
+          "riu muga": null,
+          "vilatenim": "Muga (Vilatenim-Castelló)",
+          "castelló d'empúries": "Muga (Vilatenim-Castelló)",
+          "trabuc": "Muga (El Trabuc)",
+          "el trabuc": "Muga (El Trabuc)",
+          "resclosa": "Muga (La Resclosa)",
+          "la resclosa": "Muga (La Resclosa)",
+          "asil": "Muga (L'Asil)",
+          "l'asil": "Muga (L'Asil)"
+        }
+      }
+    }
+  },
+  "metrics_catalogue": {
+    "description": "Mètriques meteorològiques disponibles al dataset i el seu significat per a l'anàlisi de ratpenats.",
+    "metrics": {
+      "temp": {
+        "description": "Temperatura ambient (°C) registrada durant l'observació.",
+        "synonyms": ["temperatura", "graus", "graus celsius", "graus celcius"]
+      },
+      "rel_humidity": {
+        "description": "Humitat relativa (%).",
+        "synonyms": ["humitat", "humitat relativa", "humiditat"]
+      },
+      "percip_mm": {
+        "description": "Precipitació en mil·límetres.",
+        "synonyms": ["precipitació", "pluja", "pluja mm", "mm"]
+      },
+      "wind_speed": {
+        "description": "Velocitat del vent (m/s).",
+        "synonyms": ["vent", "velocitat del vent", "wind", "velocitat"]
+      }
+    }
+  },
+
+  "locations_synonyms_flat": {
+    "description": "Mapejat pla de sinònim -> nom exacte a la base de dades. Valors null signifiquen que el terme és ambigu (fa referència a múltiples llocs) i no s'ha d'aplicar cap filtre concret, sinó incloure totes les localitzacions de la zona.",
+    "montjoi": "Montjoi",
+    "cala montjoi": "Montjoi",
+    "mas marés": "Mas Marés",
+    "mas mares": "Mas Marés",
+    "norfeu": "Norfeu",
+    "cap norfeu": "Norfeu",
+    "ponac": "Ponac",
+    "tamariua": "Tamariua",
+    "cala tamariua": "Tamariua",
+    "canadell": "Canadell",
+    "cala canadell": "Canadell",
+    "la valleta": "La Valleta",
+    "valleta": "La Valleta",
+    "llança": "La Valleta",
+    "comes tortes": "Comes Tortes",
+    "mas margall": "Mas Margall",
+    "l'olivar": "L'Olivar",
+    "olivar": "L'Olivar",
+    "coma de l'infern": "Coma de l'Infern",
+    "coma infern": "Coma de l'Infern",
+    "infern": "Coma de l'Infern",
+    "vilaüt": "Estanys de Vilaüt/Pau",
+    "vilaut": "Estanys de Vilaüt/Pau",
+    "estanys de pau": "Estanys de Vilaüt/Pau",
+    "estanys de vilaüt": "Estanys de Vilaüt/Pau",
+    "la rubina": "La Rubina",
+    "rubina": "La Rubina",
+    "tres ponts": "Tres Ponts",
+    "riu tec": "Riu Tec",
+    "tec": "Riu Tec",
+    "closes de sant joan": "Closes de Sant Joan",
+    "corral de les guatlles": "Corral de les Guatlles",
+    "guatlles": "Corral de les Guatlles",
+    "estany de sant joan": "Estany de Sant Joan",
+    "els lliris grocs": "Els Lliris Grocs",
+    "lliris grocs": "Els Lliris Grocs",
+    "lliris": "Els Lliris Grocs",
+    "vilatenim": "Muga (Vilatenim-Castelló)",
+    "trabuc": "Muga (El Trabuc)",
+    "el trabuc": "Muga (El Trabuc)",
+    "resclosa": "Muga (La Resclosa)",
+    "la resclosa": "Muga (La Resclosa)",
+    "asil": "Muga (L'Asil)",
+    "l'asil": "Muga (L'Asil)"
+  },
+
+  "species_synonyms": {
+    "ratpenat comú": "Pipistrellus pipistrellus",
+    "comú": "Pipistrellus pipistrellus",
+    "pipistrel·la": "Pipistrellus pipistrellus",
+    "ratpenat de cova": "Miniopterus schreibersii",
+    "ratpenat de coves": "Miniopterus schreibersii",
+    "miniopterus": "Miniopterus schreibersii",
+    "schreibersii": "Miniopterus schreibersii",
+    "ratpenat orellut": "Plecotus austriacus",
+    "orellut": "Plecotus austriacus",
+    "orellut gris": "Plecotus austriacus",
+    "ratpenat de bosc": "Barbastella barbastellus",
+    "barbastel·la": "Barbastella barbastellus",
+    "barbastel": "Barbastella barbastellus",
+    "ratpenat de cua llarga": "Tadarida teniotis",
+    "cua llarga": "Tadarida teniotis",
+    "tadarida": "Tadarida teniotis",
+    "ratpenat de vora clara": "Pipistrellus kuhlii",
+    "vora clara": "Pipistrellus kuhlii",
+    "kuhlii": "Pipistrellus kuhlii",
+    "ratpenat d'aigua": "Myotis daubentonii",
+    "daubentonii": "Myotis daubentonii",
+    "ratpenat de muntanya": "Hypsugo savii",
+    "savii": "Hypsugo savii",
+    "ratpenat de ferradura gros": "Rhinolophus ferrumequinum",
+    "ferradura gros": "Rhinolophus ferrumequinum",
+    "ratpenat de ferradura petit": "Rhinolophus hipposideros",
+    "ferradura petit": "Rhinolophus hipposideros",
+    "ratpenat de ferradura mitjà": "Rhinolophus euryale",
+    "ferradura mitjà": "Rhinolophus euryale",
+    "noctua": "Nyctalus noctula",
+    "nòctua": "Nyctalus noctula"
+  },
+
+  "metrics_explanation": {
+    "total_count": "Comptatge de contactes acústics totals registrats per l'estació. Mesura l'activitat general (vol, navegació o pas). Paraules clau: 'comptatge', 'contactes', 'activitat general', 'passes'.",
+    "total_buzz": "Comptatge de 'feeding buzzes'. Mesura estrictament l'esforç d'alimentació (caceria d'insectes). Paraules clau: 'buzz', 'caça', 'caceria', 'alimentació', 'feeding'.",
+    "OA": "Ocupació Acústica (Acoustic Occupancy). Indicador normalitzat per esforç (Count / Esforç N). Paraules clau: 'OA', 'ocupació acústica', 'ús de l'hàbitat', 'presència normalitzada'.",
+    "OT": "Ocupació Tròfica (Trophic Occupancy). Indicador normalitzat per esforç (Buzz / Esforç N). Paraules clau: 'OT', 'ocupació tròfica', 'caça normalitzada', 'ús tròfic'.",
+    "IA": "Intensitat Depredadora (Predatory Intensity). Ràtio directa d'alimentació sobre pas (Buzz / Count). Paraules clau: 'IA', 'intensitat depredadora', 'eficiència de caça', 'ràtio de caça'."
+  },
+
+  "x_axis_rules": {
+    "species": "Quan l'usuari demana comparar entre espècies, rànquings per espècie o veure quina espècie domina.",
+    "location_name": "Quan l'usuari demana comparar entre llocs, zones o localitzacions.",
+    "observation_date": "Quan l'usuari demana la variació diària o per dies concrets.",
+    "month_year": "Quan l'usuari demana tendències temporals, evolució mensual, variació estacional o anual.",
+    "observation_hour": "Quan l'usuari demana comportament nocturn, patró horari o activitat per franja horària."
+  },
+
+  "semantic_rules": [
+    "Si l'usuari no demana cap espècie en concret, filter_species ha d'estar buit o null (significa totes).",
+    "Si l'usuari no demana cap localització en concret, filter_locations ha d'estar buit o null (significa totes).",
+    "Si el terme de localització és ambigu (ex: 'muga' o 'aiguamolls'), no filtris per cap localització concreta a filter_locations. Posa-hi null o buidor i indica-ho a l'explanation.",
+    "Si demana tendències temporals anuals o per mesos, l'eix X ha de ser 'month_year'.",
+    "Si demana el comportament dels ratpenats segons l'hora de la nit, l'eix X ha de ser 'observation_hour'.",
+    "Si demana fer comparacions o rànquings entre llocs de mostreig, l'eix X ha de ser 'location_name'.",
+    "El format de dates sempre ha de ser YYYY-MM-DD.",
+    "Utilitza el diccionari de sinònims per mapejar termes del llenguatge natural de l'usuari a les espècies científiques o noms de llocs reals del dataset.",
+    "Prioritza sempre els noms exactes de la llista de metadades reals del DataFrame davant de qualsevol altra interpretació.",
+    "Si l'usuari pregunta per 'cap de creus' en general, no filtris per localització (null) ja que inclou múltiples zones."
+  ]
+}

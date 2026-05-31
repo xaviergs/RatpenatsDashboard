@@ -2,3 +2,5 @@ streamlit
 supabase
 pandas
 python-dotenv
+google-generativeai
+pydantic

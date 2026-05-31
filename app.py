@@ -147,7 +147,11 @@ METRIC_COLS = {
     "Buzz": ("total_buzz", "Total Buzz"),
     "OA (Ocupació Acústica)": ("OA", "Índex OA"),
     "OT (Ocupació Tròfica)": ("OT", "Índex OT"),
-    "IA (Intensitat Depredadora)": ("IA", "Índex IA")
+    "IA (Intensitat Depredadora)": ("IA", "Índex IA"),
+    "Temperatura (temp)": ("temp", "Temperatura (°C)"),
+    "Humitat (rel_humidity)": ("rel_humidity", "Humitat Relativa (%)"),
+    "Precipitació (percip_mm)": ("percip_mm", "Precipitació (mm)"),
+    "Vent (wind_speed)": ("wind_speed", "Velocitat del Vent (m/s)")
 }
 
 
@@ -159,18 +163,18 @@ def main():
     # Initialize connection
     supabase_client = init_connection()
     
+    # Carreguem totes les observacions inicials per a toda l'app
+    with st.spinner("Carregant dades generals de ratpenats..."):
+        df_full = load_bat_observations()
+        
     # Create Layout Tabs
-    tab_accions, tab_estatus, tab_syllabus = st.tabs(["🚀 Accions", "📊 Estatus", "📖 Syllabus"])
+    tab_accions, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
 
     # ---------------- TAB 1: ACCIONS ----------------
     with tab_accions:
         st.header("Anàlisi i Accions: Comptatge i Buzz")
         st.markdown("Explora els resultats gràfics del comptatge i l'activitat (buzz) segons diferents criteris.")
         
-        # Carreguem totes les observacions inicials
-        with st.spinner("Carregant dades generals de ratpenats..."):
-            df_full = load_bat_observations()
-            
         import datetime
         all_species = sorted(df_full['species'].dropna().unique().tolist()) if not df_full.empty and 'species' in df_full.columns else []
         all_locations = sorted(df_full['location_name'].dropna().unique().tolist()) if not df_full.empty and 'location_name' in df_full.columns else []
@@ -893,6 +897,273 @@ def main():
         $$ IA = \\frac{\\text{Total Buzz}}{\\text{Comptatge Total (Count)}} $$
         *(Es protegeix la divisió per zero: si no hi ha activitat registrada o `Count` = 0, l'índex $IA$ és $0.0$).*
         """)
+
+    # ---------------- TAB 3: ANÀLISI SEMÀNTICA ----------------
+    with tab_chat:
+        st.header("💬 Anàlisi Semàntica i Assistència de Dades")
+        st.markdown("Fes preguntes en llenguatge natural sobre la base de dades i deixa que la intel·ligència artificial filtri les observacions i generi gràfics dinàmics a l'instant.")
+        
+        if df_full.empty:
+            st.warning("No s'han pogut carregar les dades de ratpenats per a l'anàlisi semàntic.")
+        else:
+            import ai_helper
+            
+            # Mappings for Streamlit UI selectors
+            METRIC_OPTS = {
+                "total_count": "Comptatge",
+                "total_buzz": "Buzz",
+                "OA": "OA (Ocupació Acústica)",
+                "OT": "OT (Ocupació Tròfica)",
+                "IA": "IA (Intensitat Depredadora)"
+            }
+            X_AXIS_OPTS = {
+                "species": "Espècie",
+                "location_name": "Localització",
+                "observation_date": "Data",
+                "month_year": "Mes - Any",
+                "observation_hour": "Franja Horària (h)"
+            }
+            CHART_OPTS = {
+                "cap": "Sense gràfic",
+                "barres": "Barres",
+                "línies": "Línies",
+                "dispersió": "Dispersió"
+            }
+            
+            # Inicialitzar l'estat de sessió si no existeix
+            if "chat_history" not in st.session_state:
+                st.session_state.chat_history = [
+                    {"role": "assistant", "content": "Hola! Soc el teu assistent d'anàlisi de ratpenats. Em pots demanar coses en llenguatge natural com:\n- *Mostra'm la intensitat depredadora (IA) de Miniopterus schreibersii a Cala Culip durant el juny de 2025*\n- *Quina espècie té més contactes en total?*\n- *Fes un gràfic de barres de l'ocupació acústica (OA) per a totes les localitzacions*"}
+                ]
+            
+            if "query_id" not in st.session_state:
+                st.session_state.query_id = 0
+                
+            if "ai_defaults" not in st.session_state:
+                min_date_val = df_full['observation_date'].dropna().min()
+                max_date_val = df_full['observation_date'].dropna().max()
+                st.session_state.ai_defaults = {
+                    "species": [],
+                    "locations": [],
+                    "start_date": min_date_val,
+                    "end_date": max_date_val,
+                    "metric": "total_count",
+                    "x_axis": "species",
+                    "chart_type": "barres",
+                    "explanation": "Totes les dades inicials carregades."
+                }
+
+            # Disseny split-screen: Esquerra = Xat (30%), Dreta = Visualització Activa (70%)
+            col_chat, col_vis = st.columns([3, 7])
+            
+            with col_chat:
+                st.subheader("Conversa amb l'assistent")
+                # Contenidor per missatges de xat amb alçada fixa per tenir scroll
+                chat_container = st.container(height=500)
+                with chat_container:
+                    for msg in st.session_state.chat_history:
+                        with st.chat_message(msg["role"]):
+                            st.write(msg["content"])
+                
+                # Input del xat
+                user_input = st.chat_input("Escriu la teva consulta de dades aquí...")
+                
+                if user_input:
+                    # Afegir missatge de l'usuari
+                    st.session_state.chat_history.append({"role": "user", "content": user_input})
+                    
+                    with st.spinner("Analitzant la consulta amb Gemini..."):
+                        try:
+                            # Executar anàlisi amb Gemini
+                            analysis = ai_helper.analyze_query_with_llm(
+                                user_query=user_input, 
+                                chat_history=st.session_state.chat_history[:-1], 
+                                df_full=df_full
+                            )
+                            
+                            # Parse dates safely
+                            min_date_val = df_full['observation_date'].dropna().min()
+                            max_date_val = df_full['observation_date'].dropna().max()
+                            
+                            try:
+                                start_d = pd.to_datetime(analysis.filter_start_date).date() if analysis.filter_start_date else min_date_val
+                            except Exception:
+                                start_d = min_date_val
+                                
+                            try:
+                                end_d = pd.to_datetime(analysis.filter_end_date).date() if analysis.filter_end_date else max_date_val
+                            except Exception:
+                                end_d = max_date_val
+                                
+                            # Actualitzar valors per defecte amb la resposta de la IA
+                            st.session_state.ai_defaults = {
+                                "species": analysis.filter_species or [],
+                                "locations": analysis.filter_locations or [],
+                                "start_date": start_d,
+                                "end_date": end_d,
+                                "metric": analysis.metric if analysis.metric in METRIC_OPTS else "total_count",
+                                "x_axis": analysis.x_axis if analysis.x_axis in X_AXIS_OPTS else "species",
+                                "chart_type": analysis.chart_type if analysis.chart_type in CHART_OPTS else "cap",
+                                "explanation": analysis.explanation
+                            }
+                            
+                            # Estructurar resposta de l'assistent en el xat
+                            assistant_text = f"**Anàlisi de filtre:** {analysis.explanation}\n\n"
+                            if analysis.conversational_answer:
+                                assistant_text += f"**Resposta:** {analysis.conversational_answer}"
+                            else:
+                                assistant_text += "He generat i filtrat el gràfic sol·licitat al panell de la dreta."
+                                
+                            st.session_state.chat_history.append({"role": "assistant", "content": assistant_text})
+                            
+                            # Incrementar query_id per forçar re-creació dels components de Streamlit amb nous valors
+                            st.session_state.query_id += 1
+                            
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error processant la consulta: {e}")
+                            st.session_state.chat_history.append({
+                                "role": "assistant", 
+                                "content": f"Ho sento, s'ha produït un error al processar la petició: {str(e)}"
+                            })
+                            st.rerun()
+
+            with col_vis:
+                st.subheader("Panell de Visualització Actiu")
+                
+                # Fetch species and location lists for multiselect options
+                all_species = sorted(df_full['species'].dropna().unique().tolist())
+                all_locations = sorted(df_full['location_name'].dropna().unique().tolist())
+                min_date_val = df_full['observation_date'].dropna().min()
+                max_date_val = df_full['observation_date'].dropna().max()
+                
+                # Renderitzar widgets de control híbrids (inicialitzats amb el de la IA, modificables per l'usuari)
+                with st.expander("🛠️ Retocar filtres i gràfic manualment", expanded=True):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        # Selecció de mètrica
+                        metric_list = list(METRIC_OPTS.keys())
+                        default_metric_idx = metric_list.index(st.session_state.ai_defaults["metric"]) if st.session_state.ai_defaults["metric"] in metric_list else 0
+                        sel_metric = st.selectbox(
+                            "Mètrica:",
+                            options=metric_list,
+                            format_func=lambda x: METRIC_OPTS[x],
+                            index=default_metric_idx,
+                            key=f"metric_{st.session_state.query_id}"
+                        )
+                        
+                        # Selecció d'eix X
+                        x_axis_list = list(X_AXIS_OPTS.keys())
+                        default_x_axis_idx = x_axis_list.index(st.session_state.ai_defaults["x_axis"]) if st.session_state.ai_defaults["x_axis"] in x_axis_list else 0
+                        sel_x_axis = st.selectbox(
+                            "Agrupació (Eix X):",
+                            options=x_axis_list,
+                            format_func=lambda x: X_AXIS_OPTS[x],
+                            index=default_x_axis_idx,
+                            key=f"x_axis_{st.session_state.query_id}"
+                        )
+                        
+                        # Selecció de tipus de gràfic
+                        chart_list = list(CHART_OPTS.keys())
+                        default_chart_idx = chart_list.index(st.session_state.ai_defaults["chart_type"]) if st.session_state.ai_defaults["chart_type"] in chart_list else 0
+                        sel_chart_type = st.selectbox(
+                            "Tipus de gràfic:",
+                            options=chart_list,
+                            format_func=lambda x: CHART_OPTS[x],
+                            index=default_chart_idx,
+                            key=f"chart_{st.session_state.query_id}"
+                        )
+                        
+                    with c2:
+                        # Multiselector d'espècies
+                        default_sp = [s for s in st.session_state.ai_defaults["species"] if s in all_species]
+                        sel_species = st.multiselect(
+                            "Filtrar Espècie:",
+                            options=all_species,
+                            default=default_sp,
+                            placeholder="Totes les espècies",
+                            key=f"species_{st.session_state.query_id}"
+                        )
+                        
+                        # Multiselector de localitzacions
+                        default_loc = [l for l in st.session_state.ai_defaults["locations"] if l in all_locations]
+                        sel_locations = st.multiselect(
+                            "Filtrar Localització:",
+                            options=all_locations,
+                            default=default_loc,
+                            placeholder="Totes les localitzacions",
+                            key=f"locations_{st.session_state.query_id}"
+                        )
+                        
+                        # Selector de rang de dates
+                        def_start = st.session_state.ai_defaults["start_date"]
+                        def_end = st.session_state.ai_defaults["end_date"]
+                        if def_start < min_date_val: def_start = min_date_val
+                        if def_end > max_date_val: def_end = max_date_val
+                        
+                        sel_dates = st.date_input(
+                            "Rang de dates:",
+                            value=(def_start, def_end),
+                            min_value=min_date_val,
+                            max_value=max_date_val,
+                            key=f"dates_{st.session_state.query_id}"
+                        )
+                
+                # Extraure el rang de dates correctament
+                if isinstance(sel_dates, tuple) and len(sel_dates) == 2:
+                    start_date_str = sel_dates[0].strftime("%Y-%m-%d")
+                    end_date_str = sel_dates[1].strftime("%Y-%m-%d")
+                elif isinstance(sel_dates, tuple) and len(sel_dates) == 1:
+                    start_date_str = sel_dates[0].strftime("%Y-%m-%d")
+                    end_date_str = sel_dates[0].strftime("%Y-%m-%d")
+                else:
+                    start_date_str = sel_dates.strftime("%Y-%m-%d") if sel_dates else None
+                    end_date_str = sel_dates.strftime("%Y-%m-%d") if sel_dates else None
+                
+                # Generar una QueryAnalysisSchema amb els valors actius actuals (retocats de la vista)
+                from ai_helper import QueryAnalysisSchema
+                current_analysis = QueryAnalysisSchema(
+                    explanation=st.session_state.ai_defaults["explanation"],
+                    filter_species=sel_species if sel_species else None,
+                    filter_locations=sel_locations if sel_locations else None,
+                    filter_start_date=start_date_str,
+                    filter_end_date=end_date_str,
+                    metric=sel_metric,
+                    x_axis=sel_x_axis,
+                    chart_type=sel_chart_type,
+                    conversational_answer=""
+                )
+                
+                # Aplicar els filtres i generar el gràfic a temps real
+                df_filtered, chart, filters_summary = ai_helper.apply_filters_and_generate_chart(
+                    df=df_full, 
+                    analysis=current_analysis
+                )
+                
+                # Renderitzar el resultat
+                with st.container(border=True):
+                    st.info(f"🔍 **Filtres Actius al Gràfic:**\n{filters_summary}")
+                    
+                    if st.session_state.ai_defaults["explanation"]:
+                        st.caption(f"*Motiu d'interpretació:* {st.session_state.ai_defaults['explanation']}")
+                        
+                    # Dibuixar gràfic actiu
+                    if chart is not None:
+                        st.altair_chart(chart, use_container_width=True)
+                    else:
+                        st.info("No s'ha definit cap gràfic actiu (el tipus de gràfic és 'Sense gràfic'). Modifica el selector o demana-ho directament al xat!")
+                        
+                    # Desplegable per descarregar les dades filtrades
+                    if df_filtered is not None and not df_filtered.empty:
+                        with st.expander("Veure i descarregar dades filtrades (CSV)"):
+                            st.dataframe(df_filtered, use_container_width=True)
+                            csv_data = df_filtered.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="📥 Descarregar dades filtrades com a CSV",
+                                data=csv_data,
+                                file_name="observacions_filtrades_ratpenats.csv",
+                                mime="text/csv"
+                            )
 
 if __name__ == "__main__":
     main()
