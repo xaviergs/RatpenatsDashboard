@@ -6,6 +6,17 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import altair as alt
 
+def _get_secret(key: str) -> str | None:
+    """
+    Reads a secret from st.secrets (Streamlit Cloud) if available,
+    otherwise falls back to os.environ (local .env via load_dotenv).
+    """
+    try:
+        import streamlit as st
+        return st.secrets.get(key)
+    except Exception:
+        return os.environ.get(key)
+
 # Define the Pydantic schema for Gemini Structured Output
 class QueryAnalysisSchema(BaseModel):
     explanation: str = Field(
@@ -38,11 +49,12 @@ class QueryAnalysisSchema(BaseModel):
 
 def init_gemini_client():
     """
-    Initializes the Gemini API client using the environment variable GEMINI_API_KEY.
+    Initializes the Gemini API client.
+    Reads GEMINI_API_KEY from st.secrets (Streamlit Cloud) or os.environ (local .env).
     """
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = _get_secret("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("No s'ha trobat la clau GEMINI_API_KEY a les variables d'entorn o al fitxer .env")
+        raise ValueError("No s'ha trobat la clau GEMINI_API_KEY. Afegeix-la a Streamlit Secrets o al fitxer .env local.")
     genai.configure(api_key=api_key)
 
 def analyze_query_with_llm(user_query: str, chat_history: list, df_full: pd.DataFrame) -> QueryAnalysisSchema:

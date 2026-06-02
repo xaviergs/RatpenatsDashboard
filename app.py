@@ -58,10 +58,17 @@ st.markdown("""
 def init_connection() -> Client:
     """
     Initialize and return a singleton connection to Supabase.
+    Reads credentials from st.secrets (Streamlit Cloud) or os.environ (local .env).
     Uses @st.cache_resource to prevent re-initializing the client on every rerun.
     """
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+    def _get(key: str) -> str | None:
+        try:
+            return st.secrets.get(key)
+        except Exception:
+            return os.environ.get(key)
+
+    url = _get("SUPABASE_URL")
+    key = _get("SUPABASE_KEY")
     
     if not url or not key:
         st.error("No s'han trobat les credencials de Supabase. Si us plau, configureu les variables d'entorn SUPABASE_URL i SUPABASE_KEY.")
