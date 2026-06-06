@@ -63,16 +63,27 @@ def init_connection() -> Client:
     """
     def _get(key: str) -> str | None:
         try:
-            return st.secrets.get(key)
+            value = st.secrets.get(key)
+            if value is not None:
+                return value
         except Exception:
-            return os.environ.get(key)
+            pass
+        return os.environ.get(key)
 
     url = _get("SUPABASE_URL")
     key = _get("SUPABASE_KEY")
+
+    if url:
+        url = url.strip()
+    if key:
+        key = key.strip()
     
     if not url or not key:
         st.error("No s'han trobat les credencials de Supabase. Si us plau, configureu les variables d'entorn SUPABASE_URL i SUPABASE_KEY.")
         st.stop()
+
+    if key and not key.startswith("sb_"):
+        st.warning("La clau SUPABASE_KEY no comença per 'sb_'. Comprova que has configurat la clau pública correcta.")
         
     return create_client(url, key)
 
