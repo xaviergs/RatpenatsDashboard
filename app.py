@@ -62,30 +62,48 @@ def init_connection() -> Client:
     Uses @st.cache_resource to prevent re-initializing the client on every rerun.
     """
     def _get(key: str) -> str | None:
+        value = None
         try:
             value = st.secrets.get(key)
-            if value is not None:
-                return value
         except Exception:
             pass
-        return os.environ.get(key)
+
+        if value is None:
+            value = os.environ.get(key)
+
+        if isinstance(value, str):
+            value = value.strip()
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1].strip()
+        return value
 
     url = _get("SUPABASE_URL")
     key = _get("SUPABASE_KEY")
 
-    if url:
-        url = url.strip()
-    if key:
-        key = key.strip()
-    
     if not url or not key:
         st.error("No s'han trobat les credencials de Supabase. Si us plau, configureu les variables d'entorn SUPABASE_URL i SUPABASE_KEY.")
         st.stop()
 
     if key and not key.startswith("sb_"):
-        st.warning("La clau SUPABASE_KEY no comença per 'sb_'. Comprova que has configurat la clau pública correcta.")
-        
-    return create_client(url, key)
+        st.warning("La clau SUPABASE_KEY no comença per 'sb_'. Comprova que has configurat la clau pública correcta (sense cometes ni espais addicionals).")
+
+    try:
+        return create_client(url, key)
+    except Exception as e:
+        # Show limited debug info without leaking secrets
+        if isinstance(key, str):
+            key_len = len(key)
+            key_sample = key[:5] + '...' + key[-5:]
+        else:
+            key_len = 'None'
+            key_sample = 'None'
+
+        st.error(
+            "❌ Error connectant a Supabase. Verifica que SUPABASE_URL i SUPABASE_KEY siguin correctes."
+        )
+        st.error(f"URL capturada: {url}")
+        st.error(f"SUPABASE_KEY longitud: {key_len}, prefix: {key[:3] if isinstance(key, str) else 'None'}")
+        st.stop()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_bat_observations():
