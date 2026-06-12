@@ -43,6 +43,9 @@ class QueryAnalysisSchema(BaseModel):
     chart_type: str = Field(
         description="Tipus de gràfic a dibuixar: 'barres' (gràfic de barres), 'línies' (gràfic de línies), 'dispersió' (gràfic de dispersió), o 'cap' (si l'usuari només fa una pregunta sense demanar gràfic)."
     )
+    chart_recommendation_reason: str = Field(
+        description="Justificació breu en català de per què s'ha escollit aquest tipus de gràfic. Explica la lògica de la visualització en funció de la intenció de l'usuari i la naturalesa de les dades (ex: 'Gràfic de barres perquè comparem múltiples espècies en una data específica', 'Gràfic de línies per mostrar l'evolució temporal de l'activitat', etc.)."
+    )
     conversational_answer: Optional[str] = Field(
         description="Si l'usuari fa una pregunta concreta (ex: 'quina espècie caça més?'), redacta una resposta explicativa en català usant les dades analitzades. Si és només una petició de gràfic, aquest camp pot ser breu."
     )
@@ -87,6 +90,7 @@ def analyze_query_with_llm(user_query: str, chat_history: list, df_full: pd.Data
     system_instruction = f"""
 Ets un assistent analista de dades expert en ratpenats al Cap de Creus.
 El teu objectiu és analitzar la petició de l'usuari en llenguatge natural i mapejar-la a filtres i paràmetres de gràfic exactes contra el nostre DataFrame de dades.
+A més, has de raonar sobre quina és la visualització més adequada per a cada consulta i justificar la teva elecció.
 
 MODEL SEMÀNTIC DE REFERÈNCIA, REGLES DE TRADUCCIÓ I DICCIONARI DE SINÒNIMS:
 {semantic_config_str}
@@ -107,11 +111,24 @@ METADADES REALS DEL DATASET (IMPORTANT: Mapeja els sinònims del model semàntic
 - Localitzacions disponibles: {unique_locations}
 - Rang de dates reals: des de {min_date} fins a {max_date}
 
+GUIA PER A LA SELECCIÓ DEL TIPUS DE GRÀFIC:
+- Utilitza 'barres' quan vulguis comparar valors discrets o categories (ex: espècies, localitzacions, hores específiques). Ideals per a comparacions directes entre grups.
+- Utilitza 'línies' quan vulguis mostrar l'evolució o tendència al llarg del temps (ex: activitat diària, evolució mensual, patrons horaris en seqüència).
+- Utilitza 'dispersió' quan vulguis explorar relacions entre dues variables contínues o detectar patrons/correlacions (ex: temperatura vs. comptatge).
+- Utilitza 'cap' quan l'usuari només fa una pregunta sense demanar explícitament un gràfic. En aquest cas, proporciona la resposta conversacional.
+
+PER AL CAMP 'chart_recommendation_reason':
+- Explica breument (en català) per què aquest tipus de gràfic és el millor per a la petició de l'usuari.
+- Exemple 1: "Gràfic de barres perquè comparem l'activitat de 3 espècies en la mateixa data."
+- Exemple 2: "Gràfic de línies per visualitzar l'evolució temporal de l'ocupació acústica al llarg de 6 mesos."
+- Exemple 3: "Cap visualització, ja que la pregunta és analítica (demana el recompte total) en lloc de descriptiva."
+
 INSTRUCCIONS DE SEGURETAT I FORMAT:
 1. Has de retornar un JSON que s'ajusti estrictament a l'esquema sol·licitat.
 2. Si l'usuari demana filtrar per una espècie o lloc en català (noms comuns), utilitza el diccionari de sinònims per traduir-ho als noms de les metadades reals. Si no coincideix amb cap espècie coneguda, deixa la llista buida.
-3. Redacta la 'conversational_answer' i l'explanation en català de forma clara, professional i concisa.
+3. Redacta la 'conversational_answer', l'explanation i la 'chart_recommendation_reason' en català de forma clara, professional i concisa.
 4. Si l'usuari et fa una pregunta sobre el context de la conversa, utilitza l'historial del xat que et passem.
+5. El camp 'chart_recommendation_reason' ha de ser sempre una justificació vàlida i meaningful de la visualització triad, inclús quan chart_type='cap'.
 """
 
     # Use model from environment variable or default to gemini-3.5-flash (standard in 2026)
@@ -186,6 +203,7 @@ INSTRUCCIONS DE SEGURETAT I FORMAT:
             metric="total_count",
             x_axis="species",
             chart_type="cap",
+            chart_recommendation_reason="No s'ha pogut generar una recomendació de visualització degut a un error al processar la consulta.",
             conversational_answer=f"Ho sento, hi ha hagut un problema interpretant la resposta: {str(e)}. Si us plau, torna-ho a provar."
         )
 

@@ -986,7 +986,8 @@ def main():
                     "metric": "total_count",
                     "x_axis": "species",
                     "chart_type": "barres",
-                    "explanation": "Totes les dades inicials carregades."
+                    "explanation": "Totes les dades inicials carregades.",
+                    "chart_recommendation_reason": "Gràfic de barres per comparar dades entre espècies per defecte."
                 }
 
             # Disseny split-screen: Esquerra = Xat (30%), Dreta = Visualització Activa (70%)
@@ -1040,7 +1041,8 @@ def main():
                                 "metric": analysis.metric if analysis.metric in METRIC_OPTS else "total_count",
                                 "x_axis": analysis.x_axis if analysis.x_axis in X_AXIS_OPTS else "species",
                                 "chart_type": analysis.chart_type if analysis.chart_type in CHART_OPTS else "cap",
-                                "explanation": analysis.explanation
+                                "explanation": analysis.explanation,
+                                "chart_recommendation_reason": analysis.chart_recommendation_reason
                             }
                             
                             # Estructurar resposta de l'assistent en el xat
@@ -1167,6 +1169,7 @@ def main():
                     metric=sel_metric,
                     x_axis=sel_x_axis,
                     chart_type=sel_chart_type,
+                    chart_recommendation_reason=st.session_state.ai_defaults.get("chart_recommendation_reason", ""),
                     conversational_answer=""
                 )
                 
@@ -1182,6 +1185,12 @@ def main():
                     
                     if st.session_state.ai_defaults["explanation"]:
                         st.caption(f"*Motiu d'interpretació:* {st.session_state.ai_defaults['explanation']}")
+                    
+                    # Mostrar la raó de la recomendació del gràfic si existeix i és rellevant
+                    chart_type = st.session_state.ai_defaults.get("chart_type", "cap")
+                    chart_recommendation = st.session_state.ai_defaults.get("chart_recommendation_reason", "")
+                    if chart_type != "cap" and chart_recommendation:
+                        st.caption(f"💡 **Raó de la visualització:** {chart_recommendation}")
                         
                     # Dibuixar gràfic actiu
                     if chart is not None:
