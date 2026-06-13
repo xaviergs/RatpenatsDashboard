@@ -22,16 +22,22 @@ class QueryAnalysisSchema(BaseModel):
     explanation: str = Field(
         description="Explicació molt curta en català de quins filtres i mètrica s'apliquen al gràfic segons la petició de l'usuari."
     )
+    # FIX: Tots els camps Optional ara tenen default=None explícit dins de Field()
+    # per evitar l'error "Unknown field for Schema: default" de la llibreria google-generativeai
     filter_species: Optional[List[str]] = Field(
+        default=None,
         description="Llista d'espècies exactes a filtrar. Buidor o nul si es refereix a totes o no s'especifica cap."
     )
     filter_locations: Optional[List[str]] = Field(
+        default=None,
         description="Llista de localitzacions exactes a filtrar. Buidor o nul si es refereix a totes o no s'especifica cap."
     )
     filter_start_date: Optional[str] = Field(
+        default=None,
         description="Data d'inici en format YYYY-MM-DD. Nul si no s'especifica."
     )
     filter_end_date: Optional[str] = Field(
+        default=None,
         description="Data final en format YYYY-MM-DD. Nul si no s'especifica."
     )
     metric: str = Field(
@@ -47,10 +53,18 @@ class QueryAnalysisSchema(BaseModel):
         description="Justificació breu en català de per què s'ha escollit aquest tipus de gràfic. Explica la lògica de la visualització en funció de la intenció de l'usuari i la naturalesa de les dades (ex: 'Gràfic de barres perquè comparem múltiples espècies en una data específica', 'Gràfic de línies per mostrar l'evolució temporal de l'activitat', etc.)."
     )
     conversational_answer: Optional[str] = Field(
+        default=None,
         description="Si l'usuari fa una pregunta concreta (ex: 'quina espècie caça més?'), redacta una resposta explicativa en català usant les dades analitzades. Si és només una petició de gràfic, aquest camp pot ser breu."
     )
-    secondary_metric: Optional[str] = None
-    use_dual_axis: bool = False
+    # FIX: secondary_metric i use_dual_axis ara usen Field() amb default explícit
+    secondary_metric: Optional[str] = Field(
+        default=None,
+        description="Segona mètrica per al eix Y secundari (dret) en gràfics de doble eix. Nul si no s'aplica dual axis."
+    )
+    use_dual_axis: bool = Field(
+        default=False,
+        description="Si és True, el gràfic tindrà dos eixos Y independents per comparar dues mètriques amb escales diferents."
+    )
 
 def init_gemini_client():
     """
@@ -143,10 +157,10 @@ INSTRUCCIONS DE SEGURETAT I FORMAT:
 2. Si l'usuari demana filtrar per una espècie o lloc en català (noms comuns), utilitza el diccionari de sinònims per traduir-ho als noms de les metadades reals. Si no coincideix amb cap espècie coneguda, deixa la llista buida.
 3. Redacta la 'conversational_answer', l'explanation i la 'chart_recommendation_reason' en català de forma clara, professional i concisa.
 4. Si l'usuari et fa una pregunta sobre el context de la conversa, utilitza l'historial del xat que et passem.
-5. El camp 'chart_recommendation_reason' ha de ser sempre una justificació vàlida i meaningful de la visualització triad, inclús quan chart_type='cap'.
+5. El camp 'chart_recommendation_reason' ha de ser sempre una justificació vàlida i meaningful de la visualització triada, inclús quan chart_type='cap'.
 """
 
-    # Use model from environment variable or default to gemini-3.5-flash (standard in 2026)
+    # Use model from environment variable or default to gemini-3.5-flash
     model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
     
     # Prepare chat conversation structure for the model
@@ -176,34 +190,28 @@ INSTRUCCIONS DE SEGURETAT I FORMAT:
         is_quota_or_model_error = any(kw in error_msg for kw in ["429", "quota", "limit", "blocked", "not found", "not enabled"])
         
         if is_quota_or_model_error:
-            # Fallback sequence: if default failed, try gemini-2.5-flash, then gemini-2.5-pro
-            fallback_model = "gemini-2.5-flash" if "3.5" in model_name else "gemini-2.5-pro"
-            try:
-                model = genai.GenerativeModel(
-                    model_name=fallback_model,
-                    system_instruction=system_instruction,
-                    generation_config={
-                        "response_mime_type": "application/json",
-                        "response_schema": QueryAnalysisSchema
-                    }
-                )
-                response = model.generate_content(contents)
-            except Exception as secondary_error:
-                if fallback_model != "gemini-2.5-pro":
-                    try:
-                        model = genai.GenerativeModel(
-                            model_name="gemini-2.5-pro",
-                            system_instruction=system_instruction,
-                            generation_config={
-                                "response_mime_type": "application/json",
-                                "response_schema": QueryAnalysisSchema
-                            }
-                        )
-                        response = model.generate_content(contents)
-                    except Exception:
-                        raise primary_error
-                else:
-                    raise primary_error
+            # FIX: Seqüència de fallback més clara i explícita
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+            last_error = primary_error
+            for fallback_model in fallback_models:
+                if fallback_model == model_name:
+                    continue
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=fallback_model,
+                        system_instruction=system_instruction,
+                        generation_config={
+                            "response_mime_type": "application/json",
+                            "response_schema": QueryAnalysisSchema
+                        }
+                    )
+                    response = model.generate_content(contents)
+                    break  # Si ha funcionat, sortim del bucle
+                except Exception as fallback_error:
+                    last_error = fallback_error
+                    continue
+            else:
+                raise last_error
         else:
             raise primary_error
     
@@ -249,7 +257,7 @@ def _fallback_analysis(error: Exception) -> QueryAnalysisSchema:
         metric="total_count",
         x_axis="species",
         chart_type="cap",
-        chart_recommendation_reason="No s'ha pogut generar una recomendació de visualització degut a un error al processar la consulta.",
+        chart_recommendation_reason="No s'ha pogut generar una recomanació de visualització degut a un error al processar la consulta.",
         conversational_answer=f"Ho sento, hi ha hagut un problema interpretant la resposta: {str(error)}. Si us plau, torna-ho a provar."
     )
 
@@ -407,6 +415,13 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
     
     if df_grouped.empty:
         return df_filtered, None, "Error calculant els índexs per a la visualització."
+
+    # FIX: Validació que les columnes de mètrica existeixen al df_grouped abans de dibuixar
+    missing_cols = [c for c in [metric_col] if c not in df_grouped.columns]
+    if analysis.use_dual_axis and analysis.secondary_metric:
+        missing_cols += [c for c in [analysis.secondary_metric] if c not in df_grouped.columns]
+    if missing_cols:
+        return df_grouped, None, f"Les columnes {missing_cols} no s'han pogut calcular per a la visualització."
         
     # 7. Generate Altair Chart
     chart = None
@@ -415,17 +430,26 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         sort_order = None
         if x_col == 'hora':
             sort_order = [str(i).zfill(2) for i in range(16, 24)] + [str(i).zfill(2) for i in range(0, 16)]
-            
-        x_encoding = alt.X(f'{x_col}:O' if x_col in ['hora', 'species', 'location_name'] else f'{x_col}:T', title=x_label)
+
+        # FIX: Determinem el tipus Altair de l'eix X una sola vegada per reutilitzar-lo de forma consistent
+        x_is_ordinal = x_col in ['hora', 'species', 'location_name']
+        x_altair_type = 'O' if x_is_ordinal else 'T'
+        x_shorthand = f'{x_col}:{x_altair_type}'
+
+        x_encoding = alt.X(x_shorthand, title=x_label)
         if sort_order:
-            x_encoding = alt.X(f'{x_col}:O', title=x_label, sort=sort_order)
+            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order)
             
         y_encoding = alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
         
         # Color encoding
         color_encoding = alt.Color(f'{color_col}:N', title="Llegenda") if color_col else alt.value('#1f77b4')
         
-        tooltip_list = [alt.Tooltip(f'{x_col}:O' if x_col in ['hora', 'species', 'location_name'] else f'{x_col}:T', title=x_label), alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")]
+        # FIX: Tooltip usa x_shorthand per garantir que el tipus coincideix sempre amb l'encoding X
+        tooltip_list = [
+            alt.Tooltip(x_shorthand, title=x_label),
+            alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
+        ]
         if color_col:
             tooltip_list.append(alt.Tooltip(f'{color_col}:N', title=color_col))
             
@@ -447,20 +471,24 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
                 
                 base = alt.Chart(df_grouped).encode(x=x_encoding)
                 
+                # FIX: Tooltip del dual axis usa x_shorthand consistent
+                dual_tooltip_primary = [
+                    alt.Tooltip(x_shorthand, title=x_label),
+                    alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
+                ]
+                dual_tooltip_secondary = [
+                    alt.Tooltip(x_shorthand, title=x_label),
+                    alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
+                ]
+
                 line_primary = base.mark_line(color="#1f77b4", size=2, point=True).encode(
                     y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor="#1f77b4", grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
-                    tooltip=[
-                        alt.Tooltip(f'{x_col}:O' if x_col in ['hora', 'species', 'location_name'] else f'{x_col}:T', title=x_label),
-                        alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
-                    ]
+                    tooltip=dual_tooltip_primary
                 )
                 
                 line_secondary = base.mark_line(color="#ff7f0e", size=2, point=True).encode(
                     y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor="#ff7f0e", orient="right", grid=False)),
-                    tooltip=[
-                        alt.Tooltip(f'{x_col}:O' if x_col in ['hora', 'species', 'location_name'] else f'{x_col}:T', title=x_label),
-                        alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
-                    ]
+                    tooltip=dual_tooltip_secondary
                 )
                 
                 chart = alt.layer(line_primary, line_secondary).resolve_scale(y="independent").properties(

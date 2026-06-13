@@ -1010,9 +1010,25 @@ def main():
                 user_input = st.chat_input("Escriu la teva consulta de dades aquí...")
                 
                 if user_input:
-                    # Afegir missatge de l'usuari
+                    # DEBUG: Desactivem el rerun per veure els missatges
                     st.session_state.chat_history.append({"role": "user", "content": user_input})
                     
+                    # Afegeix aquesta línia per veure l'error sense que desaparegui:
+                    import traceback
+                    try:
+                        analysis = ai_helper.analyze_query_with_llm(
+                            user_query=user_input,
+                            chat_history=st.session_state.chat_history[:-1],
+                            df_full=df_full
+                        )
+                        st.success("Gemini OK")
+                        st.json(analysis.dict())
+                        st.stop()  # Para aquí, sense rerun
+                    except Exception as e:
+                        st.error(f"ERROR: {type(e).__name__}: {e}")
+                        st.code(traceback.format_exc())
+                        st.stop()  # Para aquí, sense rerun                    
+                        
                     with st.spinner("Analitzant la consulta amb Gemini..."):
                         try:
                             # Executar anàlisi amb Gemini
