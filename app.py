@@ -950,7 +950,11 @@ def main():
                 "total_buzz": "Buzz",
                 "OA": "OA (Ocupació Acústica)",
                 "OT": "OT (Ocupació Tròfica)",
-                "IA": "IA (Intensitat Depredadora)"
+                "IA": "IA (Intensitat Depredadora)",
+                "temp": "Temperatura (°C)",
+                "rel_humidity": "Humitat Relativa (%)",
+                "wind_speed": "Velocitat del Vent (m/s)",
+                "percip_mm": "Precipitació (mm)"
             }
             X_AXIS_OPTS = {
                 "species": "Espècie",
@@ -1042,15 +1046,36 @@ def main():
                                 "x_axis": analysis.x_axis if analysis.x_axis in X_AXIS_OPTS else "species",
                                 "chart_type": analysis.chart_type if analysis.chart_type in CHART_OPTS else "cap",
                                 "explanation": analysis.explanation,
-                                "chart_recommendation_reason": analysis.chart_recommendation_reason
+                                "chart_recommendation_reason": analysis.chart_recommendation_reason,
+                                "secondary_metric": analysis.secondary_metric,
+                                "use_dual_axis": bool(analysis.use_dual_axis)
                             }
                             
-                            # Estructurar resposta de l'assistent en el xat
-                            assistant_text = f"**Anàlisi de filtre:** {analysis.explanation}\n\n"
+                            # Estructurar resposta detallada de l'assistent en el xat
+                            assistant_text = f"""**Anàlisi de la consulta:**\n{analysis.explanation}
+
+**Resposta de Gemini:**
+
+📊 **Configuració del gràfic:**
+- **Mètrica Principal:** {METRIC_OPTS.get(analysis.metric, analysis.metric)}
+- **Agrupació (Eix X):** {X_AXIS_OPTS.get(analysis.x_axis, analysis.x_axis)}
+- **Tipus de gràfic:** {CHART_OPTS.get(analysis.chart_type, analysis.chart_type)}"""
+                            
+                            if analysis.use_dual_axis and analysis.secondary_metric:
+                                assistant_text += f"\n- **Mètrica Secundària (Dual Axis):** {METRIC_OPTS.get(analysis.secondary_metric, analysis.secondary_metric)}"
+                            
+                            assistant_text += f"""
+
+🔍 **Filtres aplicats:**
+- **Espècies:** {', '.join(analysis.filter_species) if analysis.filter_species else 'Totes'}
+- **Localitzacions:** {', '.join(analysis.filter_locations) if analysis.filter_locations else 'Totes'}
+- **Data inici:** {analysis.filter_start_date or 'No especificada'}
+- **Data final:** {analysis.filter_end_date or 'No especificada'}
+
+💡 **Raonament de la visualització:** {analysis.chart_recommendation_reason}"""
+                            
                             if analysis.conversational_answer:
-                                assistant_text += f"**Resposta:** {analysis.conversational_answer}"
-                            else:
-                                assistant_text += "He generat i filtrat el gràfic sol·licitat al panell de la dreta."
+                                assistant_text += f"\n\n📝 **Resposta a la pregunta:** {analysis.conversational_answer}"
                                 
                             st.session_state.chat_history.append({"role": "assistant", "content": assistant_text})
                             

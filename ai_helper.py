@@ -35,7 +35,7 @@ class QueryAnalysisSchema(BaseModel):
         description="Data final en format YYYY-MM-DD. Nul si no s'especifica."
     )
     metric: str = Field(
-        description="Mètrica demanada pel gràfic: 'total_count' (Comptatge), 'total_buzz' (Buzz), 'OA' (Ocupació Acústica), 'OT' (Ocupació Tròfica), 'IA' (Intensitat Depredadora)."
+        description="Mètrica demanada pel gràfic: 'total_count' (Comptatge), 'total_buzz' (Buzz), 'OA' (Ocupació Acústica), 'OT' (Ocupació Tròfica), 'IA' (Intensitat Depredadora), 'temp' (Temperatura), 'rel_humidity' (Humitat), 'wind_speed' (Vent), 'percip_mm' (Precipitació)."
     )
     x_axis: str = Field(
         description="Eix X desitjat pel gràfic: 'species' (Espècie), 'location_name' (Localització), 'observation_date' (Data), 'month_year' (Mes i any), 'observation_hour' (Franja horària)."
@@ -49,6 +49,8 @@ class QueryAnalysisSchema(BaseModel):
     conversational_answer: Optional[str] = Field(
         description="Si l'usuari fa una pregunta concreta (ex: 'quina espècie caça més?'), redacta una resposta explicativa en català usant les dades analitzades. Si és només una petició de gràfic, aquest camp pot ser breu."
     )
+    secondary_metric: Optional[str] = None
+    use_dual_axis: bool = False
 
 def init_gemini_client():
     """
@@ -116,6 +118,19 @@ GUIA PER A LA SELECCIÓ DEL TIPUS DE GRÀFIC:
 - Utilitza 'línies' quan vulguis mostrar l'evolució o tendència al llarg del temps (ex: activitat diària, evolució mensual, patrons horaris en seqüència).
 - Utilitza 'dispersió' quan vulguis explorar relacions entre dues variables contínues o detectar patrons/correlacions (ex: temperatura vs. comptatge).
 - Utilitza 'cap' quan l'usuari només fa una pregunta sense demanar explícitament un gràfic. En aquest cas, proporciona la resposta conversacional.
+
+INSTRUCCIONS PER A DUAL AXIS (DOS EIXOS Y):
+- Si l'usuari demana comparar dues mètriques diferents en el MATEIX gràfic (ex: 'mostra temperatura i comptatge junts', 'compara ocupació acústica amb humitat'), utilitza:
+  * use_dual_axis = true
+  * metric = la PRIMERA mètrica (eix Y primari, esquerra)
+  * secondary_metric = la SEGONA mètrica (eix Y secundari, dreta)
+  * chart_type = 'línies' (és l'opció més adequada per a dual axis)
+- Si el gràfic és dual axis, els dos eixos seran independents (escales diferents), ideal per comparar variables amb unitats o magnituds molt distintes.
+- Exemple: Si l'usuari diu 'fes un gràfic de temperatura i comptatge al llarg del temps', retorna:
+  * metric = 'temp'
+  * secondary_metric = 'total_count'
+  * use_dual_axis = true
+  * chart_type = 'línies'
 
 PER AL CAMP 'chart_recommendation_reason':
 - Explica breument (en català) per què aquest tipus de gràfic és el millor per a la petició de l'usuari.
@@ -195,17 +210,49 @@ INSTRUCCIONS DE SEGURETAT I FORMAT:
     # Parse the response back into the Pydantic schema
     try:
         data = json.loads(response.text)
-        return QueryAnalysisSchema(**data)
+        normalized_data = _normalize_analysis(data)
+        return QueryAnalysisSchema(**normalized_data)
     except Exception as e:
         # Fallback in case of parse error
-        return QueryAnalysisSchema(
-            explanation="Error al processar la petició de la intel·ligència artificial.",
-            metric="total_count",
-            x_axis="species",
-            chart_type="cap",
-            chart_recommendation_reason="No s'ha pogut generar una recomendació de visualització degut a un error al processar la consulta.",
-            conversational_answer=f"Ho sento, hi ha hagut un problema interpretant la resposta: {str(e)}. Si us plau, torna-ho a provar."
-        )
+        return _fallback_analysis(e)
+
+def _normalize_bool(value) -> bool:
+    """Normalize common boolean-like values from LLM JSON responses."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "sí", "si"}
+    return bool(value)
+
+
+def _normalize_analysis(data: dict) -> dict:
+    """Normalize LLM response fields before building Pydantic model."""
+    normalized = dict(data)
+
+    # Ensure optional fields exist and use safe defaults.
+    normalized.setdefault("secondary_metric", None)
+    normalized["use_dual_axis"] = _normalize_bool(normalized.get("use_dual_axis", False))
+
+    # If use_dual_axis is true but secondary_metric is missing or identical, disable dual axis.
+    if normalized["use_dual_axis"] and not normalized.get("secondary_metric"):
+        normalized["use_dual_axis"] = False
+    if normalized["use_dual_axis"] and normalized.get("secondary_metric") == normalized.get("metric"):
+        normalized["use_dual_axis"] = False
+        normalized["secondary_metric"] = None
+
+    return normalized
+
+
+def _fallback_analysis(error: Exception) -> QueryAnalysisSchema:
+    return QueryAnalysisSchema(
+        explanation="Error al processar la petició de la intel·ligència artificial.",
+        metric="total_count",
+        x_axis="species",
+        chart_type="cap",
+        chart_recommendation_reason="No s'ha pogut generar una recomendació de visualització degut a un error al processar la consulta.",
+        conversational_answer=f"Ho sento, hi ha hagut un problema interpretant la resposta: {str(error)}. Si us plau, torna-ho a provar."
+    )
+
 
 def calculate_indices_for_df(df_target, df_unfiltered, group_cols):
     """
@@ -348,12 +395,13 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
     grouping_cols = [x_col]
     # If grouping by location but species are multiple, we might want color by species (and vice-versa)
     color_col = None
-    if x_col != 'species' and (not analysis.filter_species or len(analysis.filter_species) > 1):
-        grouping_cols.append('species')
-        color_col = 'species'
-    elif x_col != 'location_name' and (not analysis.filter_locations or len(analysis.filter_locations) > 1):
-        grouping_cols.append('location_name')
-        color_col = 'location_name'
+    if not (analysis.use_dual_axis and analysis.secondary_metric):
+        if x_col != 'species' and (not analysis.filter_species or len(analysis.filter_species) > 1):
+            grouping_cols.append('species')
+            color_col = 'species'
+        elif x_col != 'location_name' and (not analysis.filter_locations or len(analysis.filter_locations) > 1):
+            grouping_cols.append('location_name')
+            color_col = 'location_name'
         
     df_grouped = calculate_indices_for_df(df_filtered, df, grouping_cols)
     
@@ -383,13 +431,50 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
             
         # Draw chart
         if analysis.chart_type == "línies":
-            base_chart = alt.Chart(df_grouped).mark_line(point=True).encode(
-                x=x_encoding,
-                y=y_encoding,
-                color=color_encoding,
-                tooltip=tooltip_list
-            )
-            chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+            if analysis.use_dual_axis and analysis.secondary_metric:
+                secondary_metric_col = analysis.secondary_metric
+                secondary_metric_label = {
+                    "total_count": "Comptatge Total",
+                    "total_buzz": "Total Feeding Buzz",
+                    "OA": "Ocupació Acústica (OA)",
+                    "OT": "Ocupació Tròfica (OT)",
+                    "IA": "Intensitat Depredadora (IA)",
+                    "temp": "Temperatura (°C)",
+                    "rel_humidity": "Humitat Relativa (%)",
+                    "percip_mm": "Precipitació (mm)",
+                    "wind_speed": "Velocitat del Vent (m/s)"
+                }.get(secondary_metric_col, secondary_metric_col)
+                
+                base = alt.Chart(df_grouped).encode(x=x_encoding)
+                
+                line_primary = base.mark_line(color="#1f77b4", size=2, point=True).encode(
+                    y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor="#1f77b4", grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
+                    tooltip=[
+                        alt.Tooltip(f'{x_col}:O' if x_col in ['hora', 'species', 'location_name'] else f'{x_col}:T', title=x_label),
+                        alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
+                    ]
+                )
+                
+                line_secondary = base.mark_line(color="#ff7f0e", size=2, point=True).encode(
+                    y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor="#ff7f0e", orient="right", grid=False)),
+                    tooltip=[
+                        alt.Tooltip(f'{x_col}:O' if x_col in ['hora', 'species', 'location_name'] else f'{x_col}:T', title=x_label),
+                        alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
+                    ]
+                )
+                
+                chart = alt.layer(line_primary, line_secondary).resolve_scale(y="independent").properties(
+                    height=400,
+                    title=f"{metric_label} vs {secondary_metric_label} per {x_label}"
+                )
+            else:
+                base_chart = alt.Chart(df_grouped).mark_line(point=True).encode(
+                    x=x_encoding,
+                    y=y_encoding,
+                    color=color_encoding,
+                    tooltip=tooltip_list
+                )
+                chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
         elif analysis.chart_type == "dispersió":
             base_chart = alt.Chart(df_grouped).mark_circle(size=80, opacity=0.7).encode(
                 x=x_encoding,
