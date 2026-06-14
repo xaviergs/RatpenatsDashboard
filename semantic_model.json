@@ -203,6 +203,144 @@
     "observation_hour": "Quan l'usuari demana comportament nocturn, patró horari o activitat per franja horària."
   },
 
+  "dual_axis_rules": {
+    "description": "Regles per decidir quan activar use_dual_axis=true (dos eixos Y independents). El dual axis serveix per superposar DUES mètriques diferents al mateix gràfic amb escales separades.",
+    "when_to_use": [
+      "Quan l'usuari demana comparar dues mètriques amb unitats o magnituds molt diferents (ex: temperatura en °C vs comptatge de contactes).",
+      "Quan l'usuari diu explícitament 'compara X i Y', 'mostra X i Y junts', 'sobreposats', 'al mateix gràfic', 'relació entre X i Y al llarg del temps'.",
+      "Quan es vol correlacionar visualment una variable meteorològica (temp, humitat, vent, precipitació) amb una biològica (comptatge, buzz, OA, OT, IA) en el temps."
+    ],
+    "when_not_to_use": [
+      "Si l'usuari només esmenta UNA mètrica: use_dual_axis ha de ser false i secondary_metric null.",
+      "Si l'usuari demana explícitament un gràfic de barres simple d'una sola mètrica.",
+      "Si la segona dimensió que vol comparar és una categoria (espècie o lloc): això és color_by, NO dual axis."
+    ],
+    "field_mapping": "Quan dual axis està actiu: metric = primera mètrica (eix esquerre), secondary_metric = segona mètrica (eix dret), use_dual_axis = true, chart_type preferentment 'línies' (també s'admet 'barres', que pinta barres per la primaria i línia per la secundària), i color_by ha de ser null.",
+    "valid_combinations": [
+      {"primary": "total_count", "secondary": "temp", "reason": "Activitat general vs temperatura"},
+      {"primary": "total_count", "secondary": "rel_humidity", "reason": "Activitat general vs humitat"},
+      {"primary": "total_count", "secondary": "wind_speed", "reason": "Activitat general vs vent"},
+      {"primary": "total_buzz", "secondary": "temp", "reason": "Activitat de caça vs temperatura"},
+      {"primary": "OA", "secondary": "temp", "reason": "Ocupació acústica normalitzada vs temperatura"},
+      {"primary": "OT", "secondary": "rel_humidity", "reason": "Ocupació tròfica vs humitat"},
+      {"primary": "total_count", "secondary": "total_buzz", "reason": "Activitat total vs caça (mateixes unitats però escales diferents)"},
+      {"primary": "IA", "secondary": "temp", "reason": "Intensitat depredadora vs temperatura"}
+    ]
+  },
+
+  "color_rules": {
+    "description": "Regles per assignar el camp color_by, que afegeix una dimensió de color/llegenda al gràfic. NO confondre amb dual axis (que és per a dues mètriques).",
+    "add_species": "Assigna color_by='species' quan l'eix X NO és 'species' i l'usuari vol desglossar o comparar per espècie (ex: 'evolució mensual per cada espècie').",
+    "add_location": "Assigna color_by='location_name' quan l'eix X NO és 'location_name' i l'usuari vol desglossar o comparar per localització.",
+    "no_color": "Assigna color_by=null quan: l'usuari demana un únic valor agregat net, quan use_dual_axis és true, o quan el desglossament coincideix amb l'eix X.",
+    "max_categories_warning": "Si el desglossament per color generaria més de 8 categories i l'usuari no ho ha demanat explícitament, prefereix color_by=null per mantenir el gràfic llegible i indica-ho a l'explanation."
+  },
+
+  "aggregation_rules": {
+    "description": "Com agregar la mètrica quan es combinen múltiples registres dins d'un mateix grup de l'eix X.",
+    "sum": "Per a mètriques de comptatge acumulatiu: total_count i total_buzz. És el valor per defecte d'aquestes.",
+    "mean": "Per a mètriques meteorològiques i índexs normalitzats: temp, rel_humidity, wind_speed, percip_mm. Sumar-les no té sentit físic.",
+    "max_min": "Usa 'max' o 'min' només si l'usuari demana explícitament el valor màxim o mínim (ex: 'la temperatura màxima per mes').",
+    "auto": "Si no hi ha indicació, retorna 'auto' i el sistema deduirà sum per a comptatges i mean per a la resta."
+  },
+
+  "top_n_rules": {
+    "description": "Quan l'usuari demana un rànquing limitat de categories.",
+    "usage": "Si l'usuari diu 'les 5 espècies amb més...', 'top 3 localitzacions', 'les que més caça', assigna top_n al número demanat (5, 3...). Si demana un rànquing sense número concret, deixa top_n null (es mostren totes ordenades).",
+    "note": "top_n només té sentit quan l'eix X és una dimensió categòrica (species o location_name)."
+  },
+
+  "hour_filter_rules": {
+    "description": "Filtre per franja horària mitjançant filter_hours (llista d'enters 0-23).",
+    "usage": "Si l'usuari acota la nit o una franja (ex: 'entre les 21h i les 4h de la matinada'), expandeix el rang en una llista d'hores: [21,22,23,0,1,2,3,4]. Si no acota cap hora, filter_hours ha de ser null.",
+    "note": "No confondre amb x_axis='observation_hour', que serveix per agrupar visualment per hora, no per filtrar."
+  },
+
+  "few_shot_examples": [
+    {
+      "user_query": "Mostra'm l'evolució de la temperatura i el comptatge de contactes a Montjoi durant el 2025",
+      "expected_output": {
+        "filter_species": null,
+        "filter_locations": ["Montjoi"],
+        "filter_start_date": "2025-01-01",
+        "filter_end_date": "2025-12-31",
+        "metric": "total_count",
+        "secondary_metric": "temp",
+        "use_dual_axis": true,
+        "x_axis": "month_year",
+        "chart_type": "línies",
+        "color_by": null,
+        "aggregation": "auto",
+        "top_n": null,
+        "filter_hours": null
+      }
+    },
+    {
+      "user_query": "Quines 5 espècies tenen més activitat de caça a Norfeu?",
+      "expected_output": {
+        "filter_species": null,
+        "filter_locations": ["Norfeu"],
+        "metric": "total_buzz",
+        "secondary_metric": null,
+        "use_dual_axis": false,
+        "x_axis": "species",
+        "chart_type": "barres",
+        "color_by": null,
+        "aggregation": "sum",
+        "top_n": 5,
+        "filter_hours": null
+      }
+    },
+    {
+      "user_query": "Compara l'ocupació acústica de totes les localitzacions desglossada per espècie",
+      "expected_output": {
+        "filter_species": null,
+        "filter_locations": null,
+        "metric": "OA",
+        "secondary_metric": null,
+        "use_dual_axis": false,
+        "x_axis": "location_name",
+        "chart_type": "barres",
+        "color_by": "species",
+        "aggregation": "auto",
+        "top_n": null,
+        "filter_hours": null
+      }
+    },
+    {
+      "user_query": "Quin és el patró horari d'activitat de la pipistrel·la entre les 21h i les 3h?",
+      "expected_output": {
+        "filter_species": ["Pipistrellus pipistrellus"],
+        "filter_locations": null,
+        "metric": "total_count",
+        "secondary_metric": null,
+        "use_dual_axis": false,
+        "x_axis": "observation_hour",
+        "chart_type": "línies",
+        "color_by": null,
+        "aggregation": "sum",
+        "top_n": null,
+        "filter_hours": [21, 22, 23, 0, 1, 2, 3]
+      }
+    },
+    {
+      "user_query": "Hi ha relació entre la velocitat del vent i la intensitat de caça al llarg dels mesos?",
+      "expected_output": {
+        "filter_species": null,
+        "filter_locations": null,
+        "metric": "IA",
+        "secondary_metric": "wind_speed",
+        "use_dual_axis": true,
+        "x_axis": "month_year",
+        "chart_type": "línies",
+        "color_by": null,
+        "aggregation": "auto",
+        "top_n": null,
+        "filter_hours": null
+      }
+    }
+  ],
+
   "semantic_rules": [
     "Si l'usuari no demana cap espècie en concret, filter_species ha d'estar buit o null (significa totes).",
     "Si l'usuari no demana cap localització en concret, filter_locations ha d'estar buit o null (significa totes).",
@@ -213,6 +351,9 @@
     "El format de dates sempre ha de ser YYYY-MM-DD.",
     "Utilitza el diccionari de sinònims per mapejar termes del llenguatge natural de l'usuari a les espècies científiques o noms de llocs reals del dataset.",
     "Prioritza sempre els noms exactes de la llista de metadades reals del DataFrame davant de qualsevol altra interpretació.",
-    "Si l'usuari pregunta per 'cap de creus' en general, no filtris per localització (null) ja que inclou múltiples zones."
+    "Si l'usuari pregunta per 'cap de creus' en general, no filtris per localització (null) ja que inclou múltiples zones.",
+    "DUAL AXIS vs COLOR: si l'usuari compara DUES MÈTRIQUES (ex: temperatura i comptatge) usa use_dual_axis. Si compara una mètrica entre CATEGORIES (espècies o llocs) usa color_by. Mai els dos alhora.",
+    "Segueix sempre dual_axis_rules, color_rules, aggregation_rules, top_n_rules i hour_filter_rules per omplir els camps secondary_metric, use_dual_axis, color_by, aggregation, top_n i filter_hours.",
+    "Inspira't en els few_shot_examples per mapejar correctament la intenció de l'usuari als camps de sortida."
   ]
 }

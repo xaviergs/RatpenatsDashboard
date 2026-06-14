@@ -1010,25 +1010,8 @@ def main():
                 user_input = st.chat_input("Escriu la teva consulta de dades aquí...")
                 
                 if user_input:
-                    # DEBUG: Desactivem el rerun per veure els missatges
                     st.session_state.chat_history.append({"role": "user", "content": user_input})
-                    
-                    # Afegeix aquesta línia per veure l'error sense que desaparegui:
-                    import traceback
-                    try:
-                        analysis = ai_helper.analyze_query_with_llm(
-                            user_query=user_input,
-                            chat_history=st.session_state.chat_history[:-1],
-                            df_full=df_full
-                        )
-                        st.success("Gemini OK")
-                        st.json(analysis.dict())
-                        st.stop()  # Para aquí, sense rerun
-                    except Exception as e:
-                        st.error(f"ERROR: {type(e).__name__}: {e}")
-                        st.code(traceback.format_exc())
-                        st.stop()  # Para aquí, sense rerun                    
-                        
+
                     with st.spinner("Analitzant la consulta amb Gemini..."):
                         try:
                             # Executar anàlisi amb Gemini
@@ -1064,7 +1047,11 @@ def main():
                                 "explanation": analysis.explanation,
                                 "chart_recommendation_reason": analysis.chart_recommendation_reason,
                                 "secondary_metric": analysis.secondary_metric,
-                                "use_dual_axis": bool(analysis.use_dual_axis)
+                                "use_dual_axis": bool(analysis.use_dual_axis),
+                                "color_by": analysis.color_by,
+                                "aggregation": analysis.aggregation or "auto",
+                                "filter_hours": analysis.filter_hours,
+                                "top_n": analysis.top_n
                             }
                             
                             # Estructurar resposta detallada de l'assistent en el xat
@@ -1079,6 +1066,12 @@ def main():
                             
                             if analysis.use_dual_axis and analysis.secondary_metric:
                                 assistant_text += f"\n- **Mètrica Secundària (Dual Axis):** {METRIC_OPTS.get(analysis.secondary_metric, analysis.secondary_metric)}"
+
+                            if analysis.color_by:
+                                assistant_text += f"\n- **Desglossament per color:** {X_AXIS_OPTS.get(analysis.color_by, analysis.color_by)}"
+
+                            if analysis.top_n:
+                                assistant_text += f"\n- **Rànquing (Top N):** {analysis.top_n}"
                             
                             assistant_text += f"""
 
@@ -1089,7 +1082,7 @@ def main():
 - **Data final:** {analysis.filter_end_date or 'No especificada'}
 
 💡 **Raonament de la visualització:** {analysis.chart_recommendation_reason}"""
-                            
+
                             if analysis.conversational_answer:
                                 assistant_text += f"\n\n📝 **Resposta a la pregunta:** {analysis.conversational_answer}"
                                 
@@ -1152,6 +1145,29 @@ def main():
                             index=default_chart_idx,
                             key=f"chart_{st.session_state.query_id}"
                         )
+
+                        # Controls de doble eix Y (dual axis) per comparar dues mètriques
+                        sel_dual_axis = st.checkbox(
+                            "Doble eix Y (comparar 2 mètriques)",
+                            value=bool(st.session_state.ai_defaults.get("use_dual_axis", False)),
+                            key=f"dual_axis_{st.session_state.query_id}"
+                        )
+
+                        sel_secondary_metric = None
+                        if sel_dual_axis:
+                            secondary_list = [m for m in metric_list if m != sel_metric]
+                            default_secondary = st.session_state.ai_defaults.get("secondary_metric")
+                            default_secondary_idx = (
+                                secondary_list.index(default_secondary)
+                                if default_secondary in secondary_list else 0
+                            )
+                            sel_secondary_metric = st.selectbox(
+                                "Mètrica secundària (eix dret):",
+                                options=secondary_list,
+                                format_func=lambda x: METRIC_OPTS[x],
+                                index=default_secondary_idx,
+                                key=f"secondary_metric_{st.session_state.query_id}"
+                            )
                         
                     with c2:
                         # Multiselector d'espècies
@@ -1201,6 +1217,11 @@ def main():
                 
                 # Generar una QueryAnalysisSchema amb els valors actius actuals (retocats de la vista)
                 from ai_helper import QueryAnalysisSchema
+
+                # Coherència del dual axis: només actiu si hi ha mètrica secundària diferent.
+                use_dual_axis = bool(sel_dual_axis and sel_secondary_metric and sel_secondary_metric != sel_metric)
+                secondary_metric = sel_secondary_metric if use_dual_axis else None
+
                 current_analysis = QueryAnalysisSchema(
                     explanation=st.session_state.ai_defaults["explanation"],
                     filter_species=sel_species if sel_species else None,
@@ -1211,7 +1232,13 @@ def main():
                     x_axis=sel_x_axis,
                     chart_type=sel_chart_type,
                     chart_recommendation_reason=st.session_state.ai_defaults.get("chart_recommendation_reason", ""),
-                    conversational_answer=""
+                    conversational_answer="",
+                    secondary_metric=secondary_metric,
+                    use_dual_axis=use_dual_axis,
+                    color_by=st.session_state.ai_defaults.get("color_by") if not use_dual_axis else None,
+                    aggregation=st.session_state.ai_defaults.get("aggregation", "auto"),
+                    filter_hours=st.session_state.ai_defaults.get("filter_hours"),
+                    top_n=st.session_state.ai_defaults.get("top_n")
                 )
                 
                 # Aplicar els filtres i generar el gràfic a temps real

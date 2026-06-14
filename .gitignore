@@ -1,6 +1,9 @@
+.venv/
 venv/
-.env
+.venv312/
+.vscode/
 __pycache__/
 *.pyc
-.DS_Store
-.streamlit/secrets.toml
+.env
+.streamlit/secrets.toml.venv/
+
