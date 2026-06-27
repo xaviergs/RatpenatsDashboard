@@ -5,5 +5,10 @@ venv/
 __pycache__/
 *.pyc
 .env
-.streamlit/secrets.toml.venv/
+.streamlit/secrets.toml
+# Local-only development copies (not part of the deployed app)
+app.py.minimal.bak
+app.py.backup
+app_minimal.py
+app_ultra.py
 

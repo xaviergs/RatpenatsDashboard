@@ -1,0 +1,14 @@
+# Normalize line endings to LF in the repository to avoid CRLF churn when the
+# repo is cloned across Windows and Linux (dev container / Streamlit Cloud).
+* text=auto eol=lf
+
+# Keep Windows-only PowerShell scripts with CRLF endings.
+*.ps1 text eol=crlf
+
+# Treat common binary assets as binary (never normalize).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary

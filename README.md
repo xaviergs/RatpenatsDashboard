@@ -27,7 +27,7 @@ Ratpenats/
 | `SUPABASE_URL`  | URL del projecte Supabase                                             |
 | `SUPABASE_KEY`  | Clau `anon` del projecte Supabase                                     |
 | `GEMINI_API_KEY`| Clau d'API de Google AI Studio per al model de IA Gemini              |
-| `GEMINI_MODEL`  | (opcional) Model de Gemini a usar. Per defecte: `gemini-3.5-flash`    |
+| `GEMINI_MODEL`  | (opcional) Model de Gemini a usar. Per defecte: `gemini-2.5-pro`    |
 
 > ⚠️ **Mai pujeu el fitxer `.env` al repositori.** Feu servir `.env.example` com a plantilla.
 

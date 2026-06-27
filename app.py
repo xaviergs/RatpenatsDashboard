@@ -197,11 +197,23 @@ def main():
     st.divider()
     
     # Initialize connection
-    supabase_client = init_connection()
+    try:
+        supabase_client = init_connection()
+    except Exception as e:
+        st.error(f"Error amb Supabase: {e}")
+        return
     
     # Carreguem totes les observacions inicials per a toda l'app
-    with st.spinner("Carregant dades generals de ratpenats..."):
-        df_full = load_bat_observations()
+    # Usem session_state per evitar carregar múltiples vegades
+    if "df_full" not in st.session_state:
+        with st.spinner("Carregant dades generals de ratpenats... (Primera vegada pot tardar)"):
+            try:
+                st.session_state.df_full = load_bat_observations()
+            except Exception as e:
+                st.error(f"Error carregant dades: {e}")
+                st.session_state.df_full = pd.DataFrame()
+    
+    df_full = st.session_state.df_full
         
     # Create Layout Tabs
     tab_accions, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
@@ -1214,7 +1226,67 @@ def main():
                 else:
                     start_date_str = sel_dates.strftime("%Y-%m-%d") if sel_dates else None
                     end_date_str = sel_dates.strftime("%Y-%m-%d") if sel_dates else None
-                
+
+                # ---- Personalització visual del gràfic (independent de la consulta IA) ----
+                COLOR_SCHEMES = {
+                    "tableau10": "Tableau 10 (per defecte)",
+                    "category10": "Category 10",
+                    "set2": "Set 2 (pastel)",
+                    "dark2": "Dark 2",
+                    "tableau20": "Tableau 20 (moltes categories)",
+                    "viridis": "Viridis (seqüencial)",
+                    "plasma": "Plasma (seqüencial)",
+                    "turbo": "Turbo (arc de Sant Martí)",
+                }
+                with st.expander("🎨 Personalització visual del gràfic", expanded=False):
+                    sc1, sc2, sc3 = st.columns(3)
+                    with sc1:
+                        style_scheme = st.selectbox(
+                            "Paleta de colors (categories):",
+                            options=list(COLOR_SCHEMES.keys()),
+                            format_func=lambda x: COLOR_SCHEMES[x],
+                            index=0,
+                            key="style_scheme"
+                        )
+                        style_primary = st.color_picker(
+                            "Color principal (sèrie única):", value="#1f77b4", key="style_primary"
+                        )
+                        style_secondary = st.color_picker(
+                            "Color secundari (doble eix):", value="#ff7f0e", key="style_secondary"
+                        )
+                    with sc2:
+                        style_height = st.slider(
+                            "Alçada del gràfic (px):", min_value=250, max_value=900, value=420, step=20, key="style_height"
+                        )
+                        style_opacity = st.slider(
+                            "Opacitat de les marques:", min_value=0.1, max_value=1.0, value=0.85, step=0.05, key="style_opacity"
+                        )
+                        style_point_size = st.slider(
+                            "Mida dels punts (dispersió):", min_value=20, max_value=300, value=80, step=10, key="style_point_size"
+                        )
+                        style_label_angle = st.slider(
+                            "Angle etiquetes eix X:", min_value=-90, max_value=0, value=-45, step=15, key="style_label_angle"
+                        )
+                    with sc3:
+                        style_log = st.checkbox("Escala logarítmica (eix Y)", value=False, key="style_log")
+                        style_grid = st.checkbox("Mostrar quadrícula (eix Y)", value=True, key="style_grid")
+                        style_points = st.checkbox("Mostrar punts (línies)", value=True, key="style_points")
+                        style_interactive = st.checkbox("Zoom i desplaçament interactius", value=True, key="style_interactive")
+
+                chart_style = {
+                    "color_scheme": style_scheme,
+                    "primary_color": style_primary,
+                    "secondary_color": style_secondary,
+                    "height": style_height,
+                    "opacity": style_opacity,
+                    "point_size": style_point_size,
+                    "label_angle": style_label_angle,
+                    "log_scale": style_log,
+                    "show_grid": style_grid,
+                    "show_points": style_points,
+                    "interactive": style_interactive,
+                }
+
                 # Generar una QueryAnalysisSchema amb els valors actius actuals (retocats de la vista)
                 from ai_helper import QueryAnalysisSchema
 
@@ -1244,7 +1316,8 @@ def main():
                 # Aplicar els filtres i generar el gràfic a temps real
                 df_filtered, chart, filters_summary = ai_helper.apply_filters_and_generate_chart(
                     df=df_full, 
-                    analysis=current_analysis
+                    analysis=current_analysis,
+                    chart_style=chart_style
                 )
                 
                 # Renderitzar el resultat

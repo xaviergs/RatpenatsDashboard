@@ -92,6 +92,40 @@ def init_gemini_client():
         raise ValueError("No s'ha trobat la clau GEMINI_API_KEY. Afegeix-la a Streamlit Secrets o al fitxer .env local.")
     genai.configure(api_key=api_key)
 
+
+def _extract_response_text(response) -> str:
+    """
+    Safely extract the text payload from a Gemini response.
+    Raises a descriptive error if the model returned no usable candidate
+    (e.g. blocked by safety filters or empty output), instead of letting
+    the bare `response.text` accessor raise an opaque exception.
+    """
+    # Detect prompt-level blocking first.
+    feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(feedback, "block_reason", None) if feedback else None
+    if block_reason:
+        raise ValueError(f"La petició ha estat bloquejada per Gemini (motiu: {block_reason}).")
+
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        raise ValueError("Gemini no ha retornat cap resposta. Torna-ho a provar o reformula la consulta.")
+
+    # Reconstruct text from candidate parts when available.
+    try:
+        return response.text
+    except Exception:
+        parts_text = []
+        for cand in candidates:
+            content = getattr(cand, "content", None)
+            for part in getattr(content, "parts", []) or []:
+                txt = getattr(part, "text", None)
+                if txt:
+                    parts_text.append(txt)
+        if not parts_text:
+            raise ValueError("Gemini ha retornat una resposta buida o sense text utilitzable.")
+        return "".join(parts_text)
+
+
 def analyze_query_with_llm(user_query: str, chat_history: list, df_full: pd.DataFrame) -> QueryAnalysisSchema:
     """
     Calls Gemini using structured outputs to parse the user's natural language query
@@ -185,8 +219,16 @@ RAONAMENT PAS A PAS (segueix aquest ordre mental abans de generar el JSON):
 Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, top_n_rules, hour_filter_rules i few_shot_examples del MODEL SEMÀNTIC abans de respondre.
 """
 
-    # Use model from environment variable or default to gemini-3.5-flash
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+    # Use model from environment variable or default to gemini-2.5-pro
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+
+    # Shared generation config: enforce JSON output against the Pydantic schema
+    # and use a low temperature for stable, deterministic structured parsing.
+    generation_config = {
+        "response_mime_type": "application/json",
+        "response_schema": QueryAnalysisSchema,
+        "temperature": 0.1,
+    }
     
     # Prepare chat conversation structure for the model
     # Convert past history into Content objects for Google Generative AI
@@ -203,20 +245,17 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
         model = genai.GenerativeModel(
             model_name=model_name,
             system_instruction=system_instruction,
-            generation_config={
-                "response_mime_type": "application/json",
-                "response_schema": QueryAnalysisSchema
-            }
+            generation_config=generation_config
         )
         response = model.generate_content(contents)
     except Exception as primary_error:
         # Check if it is a rate limit, quota, or model access error
         error_msg = str(primary_error).lower()
         is_quota_or_model_error = any(kw in error_msg for kw in ["429", "quota", "limit", "blocked", "not found", "not enabled"])
-        
+
         if is_quota_or_model_error:
-            # FIX: Seqüència de fallback més clara i explícita
-            fallback_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+            # FIX: Seqüència de fallback amb noms de model vàlids i actuals.
+            fallback_models = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
             last_error = primary_error
             for fallback_model in fallback_models:
                 if fallback_model == model_name:
@@ -225,10 +264,7 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
                     model = genai.GenerativeModel(
                         model_name=fallback_model,
                         system_instruction=system_instruction,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "response_schema": QueryAnalysisSchema
-                        }
+                        generation_config=generation_config
                     )
                     response = model.generate_content(contents)
                     break  # Si ha funcionat, sortim del bucle
@@ -239,10 +275,10 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
                 raise last_error
         else:
             raise primary_error
-    
+
     # Parse the response back into the Pydantic schema
     try:
-        data = json.loads(response.text)
+        data = json.loads(_extract_response_text(response))
         normalized_data = _normalize_analysis(data)
         return QueryAnalysisSchema(**normalized_data)
     except Exception as e:
@@ -408,11 +444,44 @@ def calculate_indices_for_df(df_target, df_unfiltered, group_cols, weather_agg: 
     
     return df_grouped
 
-def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSchema):
+# Default visual style for generated charts. Any subset can be overridden via the
+# `chart_style` argument of apply_filters_and_generate_chart so the user can fully
+# customise the look & feel from the UI without touching the analysis logic.
+DEFAULT_CHART_STYLE = {
+    "height": 420,
+    "color_scheme": "tableau10",   # Altair categorical color scheme for the legend
+    "primary_color": "#1f77b4",    # Single-series color when there is no color breakdown
+    "secondary_color": "#ff7f0e",  # Secondary metric color on dual-axis charts
+    "opacity": 0.85,               # Mark opacity (0.1 - 1.0)
+    "show_points": True,           # Show markers on line/scatter charts
+    "show_grid": True,             # Show Y axis gridlines
+    "log_scale": False,            # Use a logarithmic scale on the Y axis
+    "interactive": True,           # Enable pan & zoom interactions
+    "label_angle": -45,            # X axis label rotation for categorical axes
+    "point_size": 80,              # Marker size for scatter charts
+}
+
+
+def _resolve_chart_style(chart_style: dict | None) -> dict:
+    """Merge a user-provided style dict over the defaults, ignoring None values."""
+    style = dict(DEFAULT_CHART_STYLE)
+    if chart_style:
+        for key, value in chart_style.items():
+            if key in style and value is not None:
+                style[key] = value
+    return style
+
+
+def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSchema, chart_style: dict | None = None):
     """
     Applies filters specified by the QueryAnalysisSchema and creates an Altair chart
     suitable for the active dashboard panel.
+
+    chart_style is an optional dict of visual overrides (see DEFAULT_CHART_STYLE)
+    that lets the user customise colors, height, scale, opacity and interactivity.
     """
+    style = _resolve_chart_style(chart_style)
+
     if df.empty:
         return pd.DataFrame(), None, "Sense dades disponibles."
         
@@ -557,14 +626,22 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         x_altair_type = 'O' if x_is_ordinal else 'T'
         x_shorthand = f'{x_col}:{x_altair_type}'
 
-        x_encoding = alt.X(x_shorthand, title=x_label)
+        # X axis styling (categorical axes get a configurable label angle).
+        x_axis_opts = alt.Axis(grid=False, labelAngle=style['label_angle']) if x_is_ordinal else alt.Axis(grid=False)
+        x_encoding = alt.X(x_shorthand, title=x_label, axis=x_axis_opts)
         if sort_order:
-            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order)
-            
-        y_encoding = alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
-        
-        # Color encoding
-        color_encoding = alt.Color(f'{color_col}:N', title="Llegenda") if color_col else alt.value('#1f77b4')
+            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order, axis=x_axis_opts)
+
+        # Y axis styling: optional logarithmic scale and configurable gridlines.
+        y_scale = alt.Scale(type='log') if style['log_scale'] else alt.Undefined
+        y_axis_opts = alt.Axis(grid=style['show_grid'], gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])
+        y_encoding = alt.Y(f'{metric_col}:Q', title=metric_label, scale=y_scale, axis=y_axis_opts)
+
+        # Color encoding: apply the chosen categorical scheme, or a single primary color.
+        if color_col:
+            color_encoding = alt.Color(f'{color_col}:N', title="Llegenda", scale=alt.Scale(scheme=style['color_scheme']))
+        else:
+            color_encoding = alt.value(style['primary_color'])
         
         # FIX: Tooltip usa x_shorthand per garantir que el tipus coincideix sempre amb l'encoding X
         tooltip_list = [
@@ -592,6 +669,11 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         secondary_metric_col = analysis.secondary_metric if dual_active else None
         secondary_metric_label = metric_labels_map.get(secondary_metric_col, secondary_metric_col) if dual_active else None
 
+        primary_color = style['primary_color']
+        secondary_color = style['secondary_color']
+        chart_height = style['height']
+        mark_opacity = style['opacity']
+
         def _build_dual_axis_chart(primary_mark: str):
             """Build a layered dual-Y-axis chart. primary_mark is 'line' or 'bar'."""
             base = alt.Chart(df_grouped).encode(x=x_encoding)
@@ -604,21 +686,21 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
                 alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
             ]
             if primary_mark == "bar":
-                layer_primary = base.mark_bar(color="#1f77b4", opacity=0.65).encode(
-                    y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor="#1f77b4", grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
+                layer_primary = base.mark_bar(color=primary_color, opacity=min(mark_opacity, 0.75)).encode(
+                    y=alt.Y(f'{metric_col}:Q', title=metric_label, scale=y_scale, axis=alt.Axis(titleColor=primary_color, grid=style['show_grid'], gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
                     tooltip=dual_tooltip_primary
                 )
             else:
-                layer_primary = base.mark_line(color="#1f77b4", size=2, point=True).encode(
-                    y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor="#1f77b4", grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
+                layer_primary = base.mark_line(color=primary_color, size=2, point=style['show_points'], opacity=mark_opacity).encode(
+                    y=alt.Y(f'{metric_col}:Q', title=metric_label, scale=y_scale, axis=alt.Axis(titleColor=primary_color, grid=style['show_grid'], gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
                     tooltip=dual_tooltip_primary
                 )
-            layer_secondary = base.mark_line(color="#ff7f0e", size=2, point=True).encode(
-                y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor="#ff7f0e", orient="right", grid=False)),
+            layer_secondary = base.mark_line(color=secondary_color, size=2, point=style['show_points'], opacity=mark_opacity).encode(
+                y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor=secondary_color, orient="right", grid=False)),
                 tooltip=dual_tooltip_secondary
             )
             return alt.layer(layer_primary, layer_secondary).resolve_scale(y="independent").properties(
-                height=400,
+                height=chart_height,
                 title=f"{metric_label} vs {secondary_metric_label} per {x_label}"
             )
 
@@ -627,34 +709,37 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
             if dual_active:
                 chart = _build_dual_axis_chart("line")
             else:
-                base_chart = alt.Chart(df_grouped).mark_line(point=True).encode(
+                base_chart = alt.Chart(df_grouped).mark_line(point=style['show_points'], opacity=mark_opacity).encode(
                     x=x_encoding,
                     y=y_encoding,
                     color=color_encoding,
                     tooltip=tooltip_list
                 )
-                chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+                chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
         elif analysis.chart_type == "dispersió":
-            base_chart = alt.Chart(df_grouped).mark_circle(size=80, opacity=0.7).encode(
+            base_chart = alt.Chart(df_grouped).mark_circle(size=style['point_size'], opacity=mark_opacity).encode(
                 x=x_encoding,
                 y=y_encoding,
                 color=color_encoding,
                 tooltip=tooltip_list
             )
-            chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+            chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
         else: # Default is barres
             if dual_active:
                 chart = _build_dual_axis_chart("bar")
             else:
-                base_chart = alt.Chart(df_grouped).mark_bar().encode(
+                base_chart = alt.Chart(df_grouped).mark_bar(opacity=mark_opacity).encode(
                     x=x_encoding,
                     y=y_encoding,
                     color=color_encoding,
                     tooltip=tooltip_list
                 )
-                chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
-            
-        chart = chart.configure_axis(grid=False).configure_title(fontSize=16, anchor='start')
+                chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
+
+        # Enable pan & zoom interactions when requested, then apply title styling.
+        if style['interactive']:
+            chart = chart.interactive()
+        chart = chart.configure_title(fontSize=16, anchor='start')
         
     filters_summary = " | ".join(active_filters_txt) + f" | Mètrica: {metric_label}"
     return df_grouped, chart, filters_summary
