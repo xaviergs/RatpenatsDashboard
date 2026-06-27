@@ -105,32 +105,59 @@ def init_connection() -> Client:
         st.error(f"SUPABASE_KEY longitud: {key_len}, prefix: {key[:3] if isinstance(key, str) else 'None'}")
         st.stop()
 
-@st.cache_data(ttl=300, show_spinner=False)
-def load_bat_observations():
+def load_bat_observations(_progress_callback=None):
+    """
+    Load the full bat_observations_full dataset using paginated range() queries.
+
+    _progress_callback(loaded_rows: int) is invoked after each page so the UI can
+    render a live progress indicator. It is prefixed with an underscore so Streamlit
+    excludes it from the cache key (callbacks are not hashable / not relevant to data).
+    An optional MAX_ROWS_LOAD env var caps the load only as a safety valve; by default
+    the whole dataset is fetched.
+    """
     client = init_connection()
     all_records = []
     offset = 0
     max_rows = 1000
-    
+    cap_env = os.getenv("MAX_ROWS_LOAD", "").strip()
+    max_total_rows = int(cap_env) if cap_env.isdigit() and int(cap_env) > 0 else None
+    # Keep payload minimal to reduce first-load latency from Supabase.
+    selected_columns = (
+        "species,location_name,observation_date,observation_hour,"
+        "total_count,total_buzz,temp,rel_humidity,wind_speed,precip_mm"
+    )
+
     while True:
+        if max_total_rows is not None and len(all_records) >= max_total_rows:
+            break
         try:
-            res = client.table("bat_observations_full").select("*").range(offset, offset + max_rows - 1).execute()
+            page_size = max_rows
+            if max_total_rows is not None:
+                page_size = min(max_rows, max_total_rows - len(all_records))
+            res = (
+                client.table("bat_observations_full")
+                .select(selected_columns)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
             if res.data:
                 all_records.extend(res.data)
-            
-            if not res.data or len(res.data) < max_rows:
+                if _progress_callback:
+                    _progress_callback(len(all_records))
+
+            if not res.data or len(res.data) < page_size:
                 break
-                
-            offset += max_rows
+
+            offset += page_size
         except Exception as e:
             st.error(f"Error carregant dades bat_observations_full: {e}")
             break
-            
+
     if not all_records:
         return pd.DataFrame()
-    
+
     df = pd.DataFrame(all_records)
-    
+
     # Ensure proper data types
     if 'observation_date' in df.columns:
         df['observation_date'] = pd.to_datetime(df['observation_date']).dt.date
@@ -138,14 +165,19 @@ def load_bat_observations():
         df['total_count'] = pd.to_numeric(df['total_count'], errors='coerce').fillna(0)
     if 'total_buzz' in df.columns:
         df['total_buzz'] = pd.to_numeric(df['total_buzz'], errors='coerce').fillna(0)
-        
+
     if 'temp' in df.columns:
         df['temp'] = pd.to_numeric(df['temp'], errors='coerce')
     if 'rel_humidity' in df.columns:
         df['rel_humidity'] = pd.to_numeric(df['rel_humidity'], errors='coerce')
     if 'wind_speed' in df.columns:
         df['wind_speed'] = pd.to_numeric(df['wind_speed'], errors='coerce')
-        
+    # Backward compatibility: the app uses `percip_mm` in metrics/options.
+    if 'precip_mm' in df.columns and 'percip_mm' not in df.columns:
+        df['percip_mm'] = pd.to_numeric(df['precip_mm'], errors='coerce')
+    elif 'percip_mm' in df.columns:
+        df['percip_mm'] = pd.to_numeric(df['percip_mm'], errors='coerce')
+
     return df
 
 def calculate_ecological_indices(df_target, df_unfiltered, group_cols):
@@ -203,18 +235,34 @@ def main():
         st.error(f"Error amb Supabase: {e}")
         return
     
-    # Carreguem totes les observacions inicials per a toda l'app
-    # Usem session_state per evitar carregar múltiples vegades
+    # Load all observations automatically on startup, with a live progress indicator
+    # so the user can see how the download is going on large datasets.
     if "df_full" not in st.session_state:
-        with st.spinner("Carregant dades generals de ratpenats... (Primera vegada pot tardar)"):
-            try:
-                st.session_state.df_full = load_bat_observations()
-            except Exception as e:
-                st.error(f"Error carregant dades: {e}")
-                st.session_state.df_full = pd.DataFrame()
+        progress_box = st.status("Carregant dades de ratpenats...", expanded=True)
+        progress_bar = st.progress(0, text="Connectant amb la base de dades...")
+
+        def _update_progress(loaded_rows):
+            # We don't know the total upfront; show a moving indicator capped at 95%.
+            pct = min(95, 5 + (loaded_rows // 1000) * 5)
+            progress_bar.progress(pct, text=f"Carregant observacions... {loaded_rows:,} registres")
+
+        try:
+            df_loaded = load_bat_observations(_progress_callback=_update_progress)
+            progress_bar.progress(100, text=f"Completat: {len(df_loaded):,} registres carregats.")
+            progress_box.update(
+                label=f"Dades carregades correctament ({len(df_loaded):,} registres).",
+                state="complete",
+                expanded=False,
+            )
+            progress_bar.empty()
+            st.session_state.df_full = df_loaded
+        except Exception as e:
+            progress_box.update(label="Error carregant les dades.", state="error")
+            st.error(f"Error carregant dades: {e}")
+            st.session_state.df_full = pd.DataFrame()
     
     df_full = st.session_state.df_full
-        
+
     # Create Layout Tabs
     tab_accions, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
 
@@ -732,6 +780,106 @@ def main():
                         
                         st.altair_chart(chart_reg, use_container_width=True)
 
+        # --- Àrea 6: Mapa de calor multidimensional ---
+        st.subheader("Mapa de Calor Multidimensional")
+        st.markdown("Creua dues dimensions (espècie, localització, hora o mes) per detectar patrons d'activitat amb una matriu de color.")
+        with st.container(border=True):
+            # Selectable dimensions and metrics for the heatmap matrix.
+            HEAT_DIMS = {
+                "species": "Espècie",
+                "location_name": "Localització",
+                "hora": "Franja Horària",
+                "month_year": "Mes - Any",
+            }
+            HEAT_METRICS = {
+                "Comptatge": ("total_count", "Comptatge Total"),
+                "Buzz": ("total_buzz", "Total Buzz"),
+                "OA (Ocupació Acústica)": ("OA", "Índex OA"),
+                "OT (Ocupació Tròfica)": ("OT", "Índex OT"),
+                "IA (Intensitat Depredadora)": ("IA", "Índex IA"),
+            }
+            col6_filt, col6_graf = st.columns([1, 3])
+            with col6_filt:
+                st.markdown("##### Paràmetres")
+                heat_esp_sel = st.multiselect("Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="heat_esp")
+                heat_loc_sel = st.multiselect("Localització:", ["Totes"] + all_locations, default=["Totes"], key="heat_loc")
+                heat_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="heat_date_slider")
+                heat_metric_lbl = st.selectbox("Mètrica (color):", list(HEAT_METRICS.keys()), key="heat_metric")
+                heat_x_lbl = st.selectbox("Dimensió eix X:", list(HEAT_DIMS.values()), index=2, key="heat_x")
+                heat_y_lbl = st.selectbox("Dimensió eix Y:", list(HEAT_DIMS.values()), index=0, key="heat_y")
+                heat_scheme = st.selectbox("Paleta de color:", ["viridis", "plasma", "turbo", "magma", "inferno", "cividis"], key="heat_scheme")
+                heat_show_text = st.checkbox("Mostra els valors a les cel·les", value=True, key="heat_show_text")
+
+            with col6_graf:
+                st.markdown("##### Resultat Gràfic")
+                # Reverse-map the displayed Catalan labels back to column names.
+                lbl_to_col = {v: k for k, v in HEAT_DIMS.items()}
+                heat_x_col = lbl_to_col[heat_x_lbl]
+                heat_y_col = lbl_to_col[heat_y_lbl]
+
+                if df_full.empty:
+                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
+                elif heat_x_col == heat_y_col:
+                    st.info("Selecciona dues dimensions diferents per als eixos X i Y.")
+                else:
+                    import altair as alt
+
+                    df_heat_unf = df_full.copy()
+                    if "Totes" not in heat_loc_sel and heat_loc_sel:
+                        df_heat_unf = df_heat_unf[df_heat_unf['location_name'].isin(heat_loc_sel)]
+                    h_start, h_end = heat_date_sel
+                    df_heat_unf = df_heat_unf[(df_heat_unf['observation_date'] >= h_start) & (df_heat_unf['observation_date'] <= h_end)]
+
+                    df_heat = df_heat_unf.copy()
+                    if "Totes" not in heat_esp_sel and heat_esp_sel:
+                        df_heat = df_heat[df_heat['species'].isin(heat_esp_sel)]
+
+                    # Derive the synthetic dimension columns used as axes.
+                    for _df in (df_heat_unf, df_heat):
+                        if 'observation_hour' in _df.columns:
+                            _df['hora'] = _df['observation_hour'].astype('Int64').astype(str).str.zfill(2)
+                        else:
+                            _df['hora'] = 'Desconeguda'
+                        _df['month_year'] = pd.to_datetime(_df['observation_date'], errors='coerce').dt.strftime('%Y-%m')
+
+                    if df_heat.empty:
+                        st.info("Cap registre coincideix amb els filtres seleccionats.")
+                    else:
+                        group_cols = [heat_x_col, heat_y_col]
+                        df_heat_grouped = calculate_ecological_indices(df_heat, df_heat_unf, group_cols)
+                        metric_col, metric_title = HEAT_METRICS[heat_metric_lbl]
+
+                        # Keep hours in chronological nocturnal order on whichever axis uses them.
+                        ordre_nocturn = [str(i).zfill(2) for i in range(16, 24)] + [str(i).zfill(2) for i in range(0, 16)]
+                        x_sort = ordre_nocturn if heat_x_col == 'hora' else 'ascending'
+                        y_sort = ordre_nocturn if heat_y_col == 'hora' else 'ascending'
+
+                        base_heat = alt.Chart(df_heat_grouped).encode(
+                            x=alt.X(f'{heat_x_col}:N', title=heat_x_lbl, sort=x_sort, axis=alt.Axis(labelAngle=-45)),
+                            y=alt.Y(f'{heat_y_col}:N', title=heat_y_lbl, sort=y_sort),
+                        )
+                        heat_rects = base_heat.mark_rect().encode(
+                            color=alt.Color(f'{metric_col}:Q', title=metric_title, scale=alt.Scale(scheme=heat_scheme)),
+                            tooltip=[
+                                alt.Tooltip(f'{heat_x_col}:N', title=heat_x_lbl),
+                                alt.Tooltip(f'{heat_y_col}:N', title=heat_y_lbl),
+                                alt.Tooltip(f'{metric_col}:Q', title=metric_title, format=".4f"),
+                            ],
+                        )
+                        chart_heat = heat_rects
+                        if heat_show_text:
+                            text_fmt = ".0f" if metric_col in ("total_count", "total_buzz") else ".2f"
+                            heat_text = base_heat.mark_text(baseline='middle', fontSize=10).encode(
+                                text=alt.Text(f'{metric_col}:Q', format=text_fmt),
+                                color=alt.value('white'),
+                            )
+                            chart_heat = heat_rects + heat_text
+
+                        n_rows = df_heat_grouped[heat_y_col].nunique()
+                        chart_height = max(300, min(900, n_rows * 28))
+                        chart_heat = chart_heat.properties(height=chart_height).configure_view(strokeWidth=0)
+                        st.altair_chart(chart_heat, use_container_width=True)
+
     # ---------------- TAB 2: ESTATUS ----------------
     with tab_estatus:
         st.subheader("Salut i Metadades de la Base de Dades")
@@ -979,7 +1127,9 @@ def main():
                 "cap": "Sense gràfic",
                 "barres": "Barres",
                 "línies": "Línies",
-                "dispersió": "Dispersió"
+                "dispersió": "Dispersió",
+                "mapa_calor": "Mapa de calor",
+                "bombolles": "Bombolles (multidimensional)"
             }
             
             # Inicialitzar l'estat de sessió si no existeix

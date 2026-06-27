@@ -126,6 +126,54 @@ def _extract_response_text(response) -> str:
         return "".join(parts_text)
 
 
+# Allowed values, kept in sync with QueryAnalysisSchema and the chart builder.
+_METRIC_ENUM = ["total_count", "total_buzz", "OA", "OT", "IA", "temp", "rel_humidity", "wind_speed", "percip_mm"]
+_X_AXIS_ENUM = ["species", "location_name", "observation_date", "month_year", "observation_hour"]
+_CHART_ENUM = ["barres", "línies", "dispersió", "mapa_calor", "bombolles", "cap"]
+_AGG_ENUM = ["sum", "mean", "max", "min", "auto"]
+_DIMENSION_ENUM = ["species", "location_name"]
+
+
+def _build_response_schema():
+    """
+    Build the Gemini response schema directly as a protos.Schema.
+
+    IMPORTANT: Passing the Pydantic model class as `response_schema` raises
+    `Unknown field for Schema: default` because Pydantic injects `default`/`anyOf`
+    keys that the Gemini proto Schema does not support. Building the proto Schema
+    manually bypasses that broken conversion (the library passes protos.Schema
+    instances through untouched).
+    """
+    from google.generativeai import protos
+    T = protos.Type
+
+    def s(**kw):
+        return protos.Schema(**kw)
+
+    return s(
+        type=T.OBJECT,
+        properties={
+            "explanation": s(type=T.STRING, description="Explicació molt curta en català dels filtres i mètrica aplicats al gràfic."),
+            "filter_species": s(type=T.ARRAY, items=s(type=T.STRING), nullable=True, description="Llista d'espècies exactes a filtrar. Nul si es refereix a totes."),
+            "filter_locations": s(type=T.ARRAY, items=s(type=T.STRING), nullable=True, description="Llista de localitzacions exactes a filtrar. Nul si totes."),
+            "filter_start_date": s(type=T.STRING, nullable=True, description="Data d'inici en format YYYY-MM-DD. Nul si no s'especifica."),
+            "filter_end_date": s(type=T.STRING, nullable=True, description="Data final en format YYYY-MM-DD. Nul si no s'especifica."),
+            "metric": s(type=T.STRING, enum=_METRIC_ENUM, format="enum", description="Mètrica principal demanada pel gràfic."),
+            "x_axis": s(type=T.STRING, enum=_X_AXIS_ENUM, format="enum", description="Dimensió de l'eix X."),
+            "chart_type": s(type=T.STRING, enum=_CHART_ENUM, format="enum", description="Tipus de gràfic: barres, línies, dispersió, mapa_calor (heatmap de dues dimensions), bombolles (gràfic multidimensional), o cap."),
+            "chart_recommendation_reason": s(type=T.STRING, description="Justificació breu en català del tipus de gràfic escollit."),
+            "conversational_answer": s(type=T.STRING, nullable=True, description="Resposta explicativa en català si l'usuari fa una pregunta concreta."),
+            "secondary_metric": s(type=T.STRING, enum=_METRIC_ENUM, format="enum", nullable=True, description="Segona mètrica per a l'eix Y secundari (dual axis) o per la mida de les bombolles. Nul si no s'aplica."),
+            "use_dual_axis": s(type=T.BOOLEAN, description="True si el gràfic ha de tenir dos eixos Y independents per comparar dues mètriques."),
+            "color_by": s(type=T.STRING, enum=_DIMENSION_ENUM, format="enum", nullable=True, description="Dimensió per desglossar el color/llegenda, o segona dimensió de l'eix Y en mapes de calor. Nul si no s'aplica."),
+            "aggregation": s(type=T.STRING, enum=_AGG_ENUM, format="enum", description="Mètode d'agregació de la mètrica: sum, mean, max, min o auto."),
+            "filter_hours": s(type=T.ARRAY, items=s(type=T.INTEGER), nullable=True, description="Llista d'hores (0-23) a incloure. Nul si no s'especifica franja horària."),
+            "top_n": s(type=T.INTEGER, nullable=True, description="Nombre N per a rànquings 'top N'. Nul si no es demana rànquing limitat."),
+        },
+        required=["explanation", "metric", "x_axis", "chart_type", "chart_recommendation_reason"],
+    )
+
+
 def analyze_query_with_llm(user_query: str, chat_history: list, df_full: pd.DataFrame) -> QueryAnalysisSchema:
     """
     Calls Gemini using structured outputs to parse the user's natural language query
@@ -222,11 +270,12 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
     # Use model from environment variable or default to gemini-2.5-pro
     model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
 
-    # Shared generation config: enforce JSON output against the Pydantic schema
-    # and use a low temperature for stable, deterministic structured parsing.
+    # Shared generation config: enforce JSON output against an explicit proto
+    # schema (NOT the Pydantic class, which breaks the proto conversion) and use a
+    # low temperature for stable, deterministic structured parsing.
     generation_config = {
         "response_mime_type": "application/json",
-        "response_schema": QueryAnalysisSchema,
+        "response_schema": _build_response_schema(),
         "temperature": 0.1,
     }
     
@@ -716,6 +765,42 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
                     tooltip=tooltip_list
                 )
                 chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
+        elif analysis.chart_type == "mapa_calor" and color_col:
+            # Heatmap (mark_rect): X and a second categorical dimension on Y, with the
+            # metric mapped to color intensity. Great for species×hour or location×date.
+            dim_labels = {"species": "Espècie", "location_name": "Localització"}
+            y_dim_label = dim_labels.get(color_col, color_col)
+            sequential_schemes = {"viridis", "plasma", "turbo", "magma", "inferno", "cividis"}
+            heat_scheme = style['color_scheme'] if style['color_scheme'] in sequential_schemes else "viridis"
+            heat_tooltip = [
+                alt.Tooltip(x_shorthand, title=x_label),
+                alt.Tooltip(f'{color_col}:N', title=y_dim_label),
+                alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
+            ]
+            base_chart = alt.Chart(df_grouped).mark_rect().encode(
+                x=x_encoding,
+                y=alt.Y(f'{color_col}:N', title=y_dim_label),
+                color=alt.Color(f'{metric_col}:Q', title=metric_label, scale=alt.Scale(scheme=heat_scheme)),
+                tooltip=heat_tooltip
+            )
+            chart = base_chart.properties(height=chart_height, title=f"Mapa de calor: {metric_label} per {x_label} i {y_dim_label}")
+        elif analysis.chart_type == "bombolles":
+            # Bubble / multidimensional chart: X, Y=metric, bubble size=secondary metric
+            # (falls back to the primary metric) and color=optional breakdown dimension.
+            requested_secondary = getattr(analysis, "secondary_metric", None)
+            bubble_size_col = requested_secondary if requested_secondary and requested_secondary in df_grouped.columns else metric_col
+            bubble_size_label = metric_labels_map.get(bubble_size_col, bubble_size_col)
+            bubble_tooltip = list(tooltip_list)
+            if bubble_size_col != metric_col:
+                bubble_tooltip.append(alt.Tooltip(f'{bubble_size_col}:Q', title=bubble_size_label, format=".4f"))
+            base_chart = alt.Chart(df_grouped).mark_circle(opacity=mark_opacity).encode(
+                x=x_encoding,
+                y=y_encoding,
+                size=alt.Size(f'{bubble_size_col}:Q', title=bubble_size_label, scale=alt.Scale(range=[30, 600])),
+                color=color_encoding,
+                tooltip=bubble_tooltip
+            )
+            chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label} (mida: {bubble_size_label})")
         elif analysis.chart_type == "dispersió":
             base_chart = alt.Chart(df_grouped).mark_circle(size=style['point_size'], opacity=mark_opacity).encode(
                 x=x_encoding,
@@ -724,7 +809,7 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
                 tooltip=tooltip_list
             )
             chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
-        else: # Default is barres
+        else: # Default is barres (also used as a safe fallback for mapa_calor without a 2nd dimension)
             if dual_active:
                 chart = _build_dual_axis_chart("bar")
             else:
@@ -737,7 +822,8 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
                 chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
 
         # Enable pan & zoom interactions when requested, then apply title styling.
-        if style['interactive']:
+        # Heatmaps keep a fixed layout (interactive panning distorts the grid).
+        if style['interactive'] and analysis.chart_type != "mapa_calor":
             chart = chart.interactive()
         chart = chart.configure_title(fontSize=16, anchor='start')
         

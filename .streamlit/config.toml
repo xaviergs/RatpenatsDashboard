@@ -6,6 +6,11 @@ font = "sans serif"
 [server]
 headless = true
 enableXsrfProtection = true
+# The workspace filesystem in this dev container is mounted over 9P, where
+# Streamlit's default file watcher issues blocking stat/RPC calls that can freeze
+# the server's main thread. Disable watching to keep the server responsive.
+fileWatcherType = "none"
+runOnSave = false
 
 [browser]
 gatherUsageStats = false
