@@ -223,6 +223,79 @@ METRIC_COLS = {
 }
 
 
+# Two-color palette for dual-axis line charts: first metric → left axis, second → right axis.
+CHART_DUAL_COLORS = ['#1f77b4', '#ff7f0e']
+
+
+def render_y_range_slider(series, key, label, color=None):
+    """
+    Show an always-visible range slider for a Y axis.
+    When color is provided, renders a colored label above the slider.
+    Returns [min, max] or None if the series has no valid numeric data.
+    """
+    values = pd.to_numeric(series, errors='coerce').dropna()
+    if values.empty:
+        return None
+
+    y_min = float(values.min())
+    y_max = float(values.max())
+
+    if y_min == y_max:
+        y_max = y_min + 1.0 if y_min == 0 else y_max * 1.1
+        y_min = 0.0 if y_min == 0 else y_min * 0.9
+
+    if color:
+        st.markdown(
+            f'<p style="color:{color};font-weight:600;margin:4px 0 -14px 0">● Llindar — {label}</p>',
+            unsafe_allow_html=True,
+        )
+    y_range = st.slider(
+        label,
+        min_value=float(y_min),
+        max_value=float(y_max),
+        value=(float(y_min), float(y_max)),
+        key=key,
+        label_visibility="collapsed" if color else "visible",
+    )
+    return [float(y_range[0]), float(y_range[1])]
+
+
+def filter_by_range(df, col, y_domain=None, no_zero=False):
+    """
+    Filter df rows by optional numeric range and optionally remove zeros for a column.
+    """
+    if df.empty or col not in df.columns:
+        return df
+
+    out = df.copy()
+    vals = pd.to_numeric(out[col], errors='coerce')
+    out = out[vals.notna()]
+    vals = pd.to_numeric(out[col], errors='coerce')
+
+    if no_zero:
+        out = out[vals != 0]
+        vals = pd.to_numeric(out[col], errors='coerce')
+
+    if y_domain is not None:
+        out = out[(vals >= float(y_domain[0])) & (vals <= float(y_domain[1]))]
+
+    return out
+
+
+def enrich_grouped_with_env(df_source, group_cols, df_grouped):
+    """
+    Merge mean-aggregated environmental columns into an already-grouped dataframe.
+    """
+    env_cols = [c for c in ("temp", "rel_humidity", "wind_speed", "percip_mm") if c in df_source.columns]
+    if not env_cols:
+        return df_grouped
+    valid_group_cols = [c for c in group_cols if c in df_source.columns]
+    if not valid_group_cols:
+        return df_grouped
+    env_agg = df_source.groupby(valid_group_cols, as_index=False)[env_cols].mean()
+    return pd.merge(df_grouped, env_agg, on=valid_group_cols, how='left')
+
+
 def main():
     st.title("Ratpenats al Cap de Creus")
     st.markdown(f"**Port de Desplegament**: `{port}` (Punt per a Cloud Run)")
@@ -311,12 +384,19 @@ def main():
                     sp_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 sp_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="sp_vis")
-                
-                opcions_metrica = list(METRIC_COLS.keys())
-                if sp_vis_type == "Línies":
-                    opcions_metrica = ["Comptatge i Buzz (Doble Eix)"] + opcions_metrica
-                
-                sp_metric = st.selectbox("Mètrica a visualitzar:", opcions_metrica, key="sp_met_bar")
+
+                sp_metrics_sel = st.multiselect(
+                    "Mètriques a visualitzar (màx. 2):",
+                    list(METRIC_COLS.keys()),
+                    default=["Comptatge"],
+                    key="sp_metrics",
+                )
+                if len(sp_metrics_sel) > 2:
+                    st.warning("Només pots seleccionar fins a 2 opcions. S'utilitzaran les dues primeres.")
+                    sp_metrics_sel = sp_metrics_sel[:2]
+                if not sp_metrics_sel:
+                    sp_metrics_sel = ["Comptatge"]
+                sp_no_zeros = st.checkbox("No mostrar zeros", value=False, key="sp_no_zeros")
             
             with col1_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -337,44 +417,75 @@ def main():
                         st.info("Cap registre coincideix amb els filtres seleccionats.")
                     else:
                         import altair as alt
-                        
+                        chart_sp = None
+                        m1_label = sp_metrics_sel[0]
+                        m1_col, m1_title = METRIC_COLS[m1_label]
+                        is_dual = len(sp_metrics_sel) == 2 and sp_vis_type == "Línies"
+                        c1_color, c2_color = CHART_DUAL_COLORS
+
                         if sp_vis_type == "Línies":
                             df_sp_grouped = calculate_ecological_indices(df_sp, df_unfiltered, ["species"])
-                            
-                            base = alt.Chart(df_sp_grouped).encode(
-                                x=alt.X('species:N', title='Espècie', axis=alt.Axis(labelAngle=-45, grid=False))
-                            )
-                            
-                            if sp_metric == "Comptatge i Buzz (Doble Eix)":
-                                line_count = base.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
-                                )
-                                line_buzz = base.mark_line(color='#ff7f0e', point=True).encode(
-                                    y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
-                                )
-                                chart_sp = alt.layer(line_count, line_buzz).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                            df_sp_grouped = enrich_grouped_with_env(df_sp, ["species"], df_sp_grouped)
+                            c1_ser = df_sp_grouped[m1_col] if m1_col in df_sp_grouped.columns else pd.Series(dtype=float)
+                            if is_dual:
+                                m2_label = sp_metrics_sel[1]
+                                m2_col, m2_title = METRIC_COLS[m2_label]
+                                c2_ser = df_sp_grouped[m2_col] if m2_col in df_sp_grouped.columns else pd.Series(dtype=float)
+                                dom1 = render_y_range_slider(c1_ser, "sp_line_m1", m1_title, c1_color)
+                                df_sp_grouped = filter_by_range(df_sp_grouped, m1_col, dom1, sp_no_zeros)
+                                dom2 = render_y_range_slider(c2_ser, "sp_line_m2", m2_title, c2_color)
+                                df_sp_grouped = filter_by_range(df_sp_grouped, m2_col, dom2, sp_no_zeros)
                             else:
-                                y_col, y_title = METRIC_COLS[sp_metric]
-                                chart_sp = base.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                    tooltip=['species:N', f'{y_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                dom1 = render_y_range_slider(c1_ser, "sp_line_m1", m1_title, c1_color)
+                                dom2 = None
+                                df_sp_grouped = filter_by_range(df_sp_grouped, m1_col, dom1, sp_no_zeros)
+
+                            if df_sp_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                base = alt.Chart(df_sp_grouped).encode(
+                                    x=alt.X('species:N', title='Espècie', axis=alt.Axis(labelAngle=-45, grid=False))
+                                )
+                                if is_dual:
+                                    line1 = base.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(titleColor=c1_color, grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined)
+                                    )
+                                    line2 = base.mark_line(color=c2_color, point=True).encode(
+                                        y=alt.Y(f'{m2_col}:Q', title=m2_title,
+                                            axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
+                                            scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
+                                    )
+                                    chart_sp = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                else:
+                                    chart_sp = base.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                        tooltip=['species:N', f'{m1_col}:Q']
+                                    ).properties(height=400).configure_axis(grid=False)
                         else:
                             df_sp_grouped = calculate_ecological_indices(df_sp, df_unfiltered, ["species", "location_name"])
-                            
-                            if sp_metric == "Comptatge i Buzz (Doble Eix)":
-                                sp_metric = "Comptatge"
-                            
-                            y_col, y_title = METRIC_COLS[sp_metric]
-                            
-                            chart_sp = alt.Chart(df_sp_grouped).mark_bar().encode(
-                                x=alt.X('species:N', title='Espècie', axis=alt.Axis(labelAngle=-45, grid=False)),
-                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                color=alt.Color('location_name:N', title='Localització', legend=alt.Legend(orient="bottom", columns=3)),
-                                tooltip=['species:N', 'location_name:N', f'{y_col}:Q']
-                            ).properties(height=400).configure_axis(grid=False)
-                            
-                        st.altair_chart(chart_sp, use_container_width=True)
+                            df_sp_grouped = enrich_grouped_with_env(df_sp, ["species", "location_name"], df_sp_grouped)
+                            c1_ser = df_sp_grouped[m1_col] if m1_col in df_sp_grouped.columns else pd.Series(dtype=float)
+                            dom1 = render_y_range_slider(c1_ser, "sp_bar_m1", m1_title, c1_color)
+                            df_sp_grouped = filter_by_range(df_sp_grouped, m1_col, dom1, sp_no_zeros)
+
+                            if df_sp_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                chart_sp = alt.Chart(df_sp_grouped).mark_bar().encode(
+                                    x=alt.X('species:N', title='Espècie', axis=alt.Axis(labelAngle=-45, grid=False)),
+                                    y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                        axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                        scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                    color=alt.Color('location_name:N', title='Localització', legend=alt.Legend(orient="bottom", columns=3)),
+                                    tooltip=['species:N', 'location_name:N', f'{m1_col}:Q']
+                                ).properties(height=400).configure_axis(grid=False)
+
+                        if chart_sp is not None:
+                            st.altair_chart(chart_sp, use_container_width=True)
 
         # --- Àrea 2: Comptatge i Buzz per localització ---
         st.subheader("Comptatge i Buzz per localització")
@@ -400,12 +511,19 @@ def main():
                     loc_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 loc_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="loc_vis")
-                
-                opcions_metrica = list(METRIC_COLS.keys())
-                if loc_vis_type == "Línies":
-                    opcions_metrica = ["Comptatge i Buzz (Doble Eix)"] + opcions_metrica
-                
-                loc_metric = st.selectbox("Mètrica a visualitzar:", opcions_metrica, key="loc_met_bar")
+
+                loc_metrics_sel = st.multiselect(
+                    "Mètriques a visualitzar (màx. 2):",
+                    list(METRIC_COLS.keys()),
+                    default=["Comptatge"],
+                    key="loc_metrics",
+                )
+                if len(loc_metrics_sel) > 2:
+                    st.warning("Només pots seleccionar fins a 2 opcions. S'utilitzaran les dues primeres.")
+                    loc_metrics_sel = loc_metrics_sel[:2]
+                if not loc_metrics_sel:
+                    loc_metrics_sel = ["Comptatge"]
+                loc_no_zeros = st.checkbox("No mostrar zeros", value=False, key="loc_no_zeros")
                     
             with col2_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -426,44 +544,75 @@ def main():
                         st.info("Cap registre coincideix amb els filtres seleccionats.")
                     else:
                         import altair as alt
-                        
+                        chart_loc = None
+                        m1_label = loc_metrics_sel[0]
+                        m1_col, m1_title = METRIC_COLS[m1_label]
+                        is_dual = len(loc_metrics_sel) == 2 and loc_vis_type == "Línies"
+                        c1_color, c2_color = CHART_DUAL_COLORS
+
                         if loc_vis_type == "Línies":
                             df_loc_grouped = calculate_ecological_indices(df_loc, df_unfiltered, ["location_name"])
-                            
-                            base2 = alt.Chart(df_loc_grouped).encode(
-                                x=alt.X('location_name:N', title='Localització', axis=alt.Axis(labelAngle=-45, grid=False))
-                            )
-                            
-                            if loc_metric == "Comptatge i Buzz (Doble Eix)":
-                                line_count2 = base2.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
-                                )
-                                line_buzz2 = base2.mark_line(color='#ff7f0e', point=True).encode(
-                                    y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
-                                )
-                                chart_loc = alt.layer(line_count2, line_buzz2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                            df_loc_grouped = enrich_grouped_with_env(df_loc, ["location_name"], df_loc_grouped)
+                            c1_ser = df_loc_grouped[m1_col] if m1_col in df_loc_grouped.columns else pd.Series(dtype=float)
+                            if is_dual:
+                                m2_label = loc_metrics_sel[1]
+                                m2_col, m2_title = METRIC_COLS[m2_label]
+                                c2_ser = df_loc_grouped[m2_col] if m2_col in df_loc_grouped.columns else pd.Series(dtype=float)
+                                dom1 = render_y_range_slider(c1_ser, "loc_line_m1", m1_title, c1_color)
+                                df_loc_grouped = filter_by_range(df_loc_grouped, m1_col, dom1, loc_no_zeros)
+                                dom2 = render_y_range_slider(c2_ser, "loc_line_m2", m2_title, c2_color)
+                                df_loc_grouped = filter_by_range(df_loc_grouped, m2_col, dom2, loc_no_zeros)
                             else:
-                                y_col, y_title = METRIC_COLS[loc_metric]
-                                chart_loc = base2.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                    tooltip=['location_name:N', f'{y_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                dom1 = render_y_range_slider(c1_ser, "loc_line_m1", m1_title, c1_color)
+                                dom2 = None
+                                df_loc_grouped = filter_by_range(df_loc_grouped, m1_col, dom1, loc_no_zeros)
+
+                            if df_loc_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                base2 = alt.Chart(df_loc_grouped).encode(
+                                    x=alt.X('location_name:N', title='Localització', axis=alt.Axis(labelAngle=-45, grid=False))
+                                )
+                                if is_dual:
+                                    line1 = base2.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(titleColor=c1_color, grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined)
+                                    )
+                                    line2 = base2.mark_line(color=c2_color, point=True).encode(
+                                        y=alt.Y(f'{m2_col}:Q', title=m2_title,
+                                            axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
+                                            scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
+                                    )
+                                    chart_loc = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                else:
+                                    chart_loc = base2.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                        tooltip=['location_name:N', f'{m1_col}:Q']
+                                    ).properties(height=400).configure_axis(grid=False)
                         else:
                             df_loc_grouped = calculate_ecological_indices(df_loc, df_unfiltered, ["location_name", "species"])
-                            
-                            if loc_metric == "Comptatge i Buzz (Doble Eix)":
-                                loc_metric = "Comptatge"
-                                
-                            y_col, y_title = METRIC_COLS[loc_metric]
-                            
-                            chart_loc = alt.Chart(df_loc_grouped).mark_bar().encode(
-                                x=alt.X('location_name:N', title='Localització', axis=alt.Axis(labelAngle=-45, grid=False)),
-                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
-                                tooltip=['location_name:N', 'species:N', f'{y_col}:Q']
-                            ).properties(height=400).configure_axis(grid=False)
-                            
-                        st.altair_chart(chart_loc, use_container_width=True)
+                            df_loc_grouped = enrich_grouped_with_env(df_loc, ["location_name", "species"], df_loc_grouped)
+                            c1_ser = df_loc_grouped[m1_col] if m1_col in df_loc_grouped.columns else pd.Series(dtype=float)
+                            dom1 = render_y_range_slider(c1_ser, "loc_bar_m1", m1_title, c1_color)
+                            df_loc_grouped = filter_by_range(df_loc_grouped, m1_col, dom1, loc_no_zeros)
+
+                            if df_loc_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                chart_loc = alt.Chart(df_loc_grouped).mark_bar().encode(
+                                    x=alt.X('location_name:N', title='Localització', axis=alt.Axis(labelAngle=-45, grid=False)),
+                                    y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                        axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                        scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                    color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
+                                    tooltip=['location_name:N', 'species:N', f'{m1_col}:Q']
+                                ).properties(height=400).configure_axis(grid=False)
+
+                        if chart_loc is not None:
+                            st.altair_chart(chart_loc, use_container_width=True)
 
         # --- Àrea 3: Comptatge i Buzz per data ---
         st.subheader("Comptatge i Buzz per data")
@@ -489,12 +638,19 @@ def main():
                     date_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 date_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="date_vis")
-                
-                opcions_metrica = list(METRIC_COLS.keys())
-                if date_vis_type == "Línies":
-                    opcions_metrica = ["Comptatge i Buzz (Doble Eix)"] + opcions_metrica
-                
-                date_metric = st.selectbox("Mètrica a visualitzar:", opcions_metrica, key="date_met_bar")
+
+                date_metrics_sel = st.multiselect(
+                    "Mètriques a visualitzar (màx. 2):",
+                    list(METRIC_COLS.keys()),
+                    default=["Comptatge"],
+                    key="date_metrics",
+                )
+                if len(date_metrics_sel) > 2:
+                    st.warning("Només pots seleccionar fins a 2 opcions. S'utilitzaran les dues primeres.")
+                    date_metrics_sel = date_metrics_sel[:2]
+                if not date_metrics_sel:
+                    date_metrics_sel = ["Comptatge"]
+                date_no_zeros = st.checkbox("No mostrar zeros", value=False, key="date_no_zeros")
                     
             with col3_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -518,46 +674,77 @@ def main():
                         df_unfiltered['month_year'] = df_unfiltered['obs_dt'].dt.to_period('M').dt.to_timestamp()
                         df_date['obs_dt'] = pd.to_datetime(df_date['observation_date'])
                         df_date['month_year'] = df_date['obs_dt'].dt.to_period('M').dt.to_timestamp()
-                        
+
                         import altair as alt
-                        
+                        chart_date = None
+                        m1_label = date_metrics_sel[0]
+                        m1_col, m1_title = METRIC_COLS[m1_label]
+                        is_dual = len(date_metrics_sel) == 2 and date_vis_type == "Línies"
+                        c1_color, c2_color = CHART_DUAL_COLORS
+
                         if date_vis_type == "Línies":
                             df_date_grouped = calculate_ecological_indices(df_date, df_unfiltered, ["month_year"])
-                            
-                            base3 = alt.Chart(df_date_grouped).encode(
-                                x=alt.X('month_year:T', title='Data (Mes - Any)', axis=alt.Axis(format='%m-%Y', labelAngle=-45, grid=False, tickCount='month'))
-                            )
-                            
-                            if date_metric == "Comptatge i Buzz (Doble Eix)":
-                                line_count3 = base3.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
-                                )
-                                line_buzz3 = base3.mark_line(color='#ff7f0e', point=True).encode(
-                                    y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
-                                )
-                                chart_date = alt.layer(line_count3, line_buzz3).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                            df_date_grouped = enrich_grouped_with_env(df_date, ["month_year"], df_date_grouped)
+                            c1_ser = df_date_grouped[m1_col] if m1_col in df_date_grouped.columns else pd.Series(dtype=float)
+                            if is_dual:
+                                m2_label = date_metrics_sel[1]
+                                m2_col, m2_title = METRIC_COLS[m2_label]
+                                c2_ser = df_date_grouped[m2_col] if m2_col in df_date_grouped.columns else pd.Series(dtype=float)
+                                dom1 = render_y_range_slider(c1_ser, "date_line_m1", m1_title, c1_color)
+                                df_date_grouped = filter_by_range(df_date_grouped, m1_col, dom1, date_no_zeros)
+                                dom2 = render_y_range_slider(c2_ser, "date_line_m2", m2_title, c2_color)
+                                df_date_grouped = filter_by_range(df_date_grouped, m2_col, dom2, date_no_zeros)
                             else:
-                                y_col, y_title = METRIC_COLS[date_metric]
-                                chart_date = base3.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                    tooltip=['month_year:T', f'{y_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                dom1 = render_y_range_slider(c1_ser, "date_line_m1", m1_title, c1_color)
+                                dom2 = None
+                                df_date_grouped = filter_by_range(df_date_grouped, m1_col, dom1, date_no_zeros)
+
+                            if df_date_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                base3 = alt.Chart(df_date_grouped).encode(
+                                    x=alt.X('month_year:T', title='Data (Mes - Any)', axis=alt.Axis(format='%m-%Y', labelAngle=-45, grid=False, tickCount='month'))
+                                )
+                                if is_dual:
+                                    line1 = base3.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(titleColor=c1_color, grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined)
+                                    )
+                                    line2 = base3.mark_line(color=c2_color, point=True).encode(
+                                        y=alt.Y(f'{m2_col}:Q', title=m2_title,
+                                            axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
+                                            scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
+                                    )
+                                    chart_date = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                else:
+                                    chart_date = base3.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                        tooltip=['month_year:T', f'{m1_col}:Q']
+                                    ).properties(height=400).configure_axis(grid=False)
                         else:
                             df_date_grouped = calculate_ecological_indices(df_date, df_unfiltered, ["month_year", "species"])
-                            
-                            if date_metric == "Comptatge i Buzz (Doble Eix)":
-                                date_metric = "Comptatge"
-                                
-                            y_col, y_title = METRIC_COLS[date_metric]
-                            
-                            chart_date = alt.Chart(df_date_grouped).mark_bar(size=35).encode(
-                                x=alt.X('month_year:T', title='Data (Mes - Any)', axis=alt.Axis(format='%m-%Y', labelAngle=-45, grid=False, tickCount='month')),
-                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
-                                tooltip=['month_year:T', 'species:N', f'{y_col}:Q']
-                            ).properties(height=400).configure_axis(grid=False)
-                            
-                        st.altair_chart(chart_date, use_container_width=True)
+                            df_date_grouped = enrich_grouped_with_env(df_date, ["month_year", "species"], df_date_grouped)
+                            c1_ser = df_date_grouped[m1_col] if m1_col in df_date_grouped.columns else pd.Series(dtype=float)
+                            dom1 = render_y_range_slider(c1_ser, "date_bar_m1", m1_title, c1_color)
+                            df_date_grouped = filter_by_range(df_date_grouped, m1_col, dom1, date_no_zeros)
+
+                            if df_date_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                chart_date = alt.Chart(df_date_grouped).mark_bar(size=35).encode(
+                                    x=alt.X('month_year:T', title='Data (Mes - Any)', axis=alt.Axis(format='%m-%Y', labelAngle=-45, grid=False, tickCount='month')),
+                                    y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                        axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                        scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                    color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
+                                    tooltip=['month_year:T', 'species:N', f'{m1_col}:Q']
+                                ).properties(height=400).configure_axis(grid=False)
+
+                        if chart_date is not None:
+                            st.altair_chart(chart_date, use_container_width=True)
 
         # --- Àrea 4: Comptatge i Buzz per franja horària ---
         st.subheader("Comptatge i Buzz per franja horària")
@@ -583,12 +770,19 @@ def main():
                     hour_date_sel = (_s, _e) if _s <= _e else (_e, _s)
                 
                 hour_vis_type = st.radio("Tipus de visualització:", ["Línies", "Barres"], horizontal=True, key="hour_vis")
-                
-                opcions_metrica = list(METRIC_COLS.keys())
-                if hour_vis_type == "Línies":
-                    opcions_metrica = ["Comptatge i Buzz (Doble Eix)"] + opcions_metrica
-                
-                hour_metric = st.selectbox("Mètrica a visualitzar:", opcions_metrica, key="hour_met_bar")
+
+                hour_metrics_sel = st.multiselect(
+                    "Mètriques a visualitzar (màx. 2):",
+                    list(METRIC_COLS.keys()),
+                    default=["Comptatge"],
+                    key="hour_metrics",
+                )
+                if len(hour_metrics_sel) > 2:
+                    st.warning("Només pots seleccionar fins a 2 opcions. S'utilitzaran les dues primeres.")
+                    hour_metrics_sel = hour_metrics_sel[:2]
+                if not hour_metrics_sel:
+                    hour_metrics_sel = ["Comptatge"]
+                hour_no_zeros = st.checkbox("No mostrar zeros", value=False, key="hour_no_zeros")
                     
             with col4_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -609,53 +803,84 @@ def main():
                         st.info("Cap registre coincideix amb els filtres seleccionats.")
                     else:
                         import altair as alt
-                        
+                        chart_hour = None
+
                         if 'observation_hour' in df_unfiltered.columns:
                             df_unfiltered['hora'] = df_unfiltered['observation_hour'].astype(str).str.zfill(2)
                             df_hour['hora'] = df_hour['observation_hour'].astype(str).str.zfill(2)
                         else:
                             df_unfiltered['hora'] = 'Desconeguda'
                             df_hour['hora'] = 'Desconeguda'
-                            
+
                         ordre_nocturn = [str(i).zfill(2) for i in range(16, 24)] + [str(i).zfill(2) for i in range(0, 16)]
-                            
+                        m1_label = hour_metrics_sel[0]
+                        m1_col, m1_title = METRIC_COLS[m1_label]
+                        is_dual = len(hour_metrics_sel) == 2 and hour_vis_type == "Línies"
+                        c1_color, c2_color = CHART_DUAL_COLORS
+
                         if hour_vis_type == "Línies":
                             df_hour_grouped = calculate_ecological_indices(df_hour, df_unfiltered, ["hora"])
-                            
-                            base4 = alt.Chart(df_hour_grouped).encode(
-                                x=alt.X('hora:O', title='Franja Horària (h)', sort=ordre_nocturn, axis=alt.Axis(labelAngle=0, grid=False))
-                            )
-                            
-                            if hour_metric == "Comptatge i Buzz (Doble Eix)":
-                                line_count4 = base4.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y('total_count:Q', title='Comptatge Total', axis=alt.Axis(titleColor='#1f77b4', grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
-                                )
-                                line_buzz4 = base4.mark_line(color='#ff7f0e', point=True).encode(
-                                    y=alt.Y('total_buzz:Q', title='Total Buzz', axis=alt.Axis(titleColor='#ff7f0e', orient='right', grid=False))
-                                )
-                                chart_hour = alt.layer(line_count4, line_buzz4).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                            df_hour_grouped = enrich_grouped_with_env(df_hour, ["hora"], df_hour_grouped)
+                            c1_ser = df_hour_grouped[m1_col] if m1_col in df_hour_grouped.columns else pd.Series(dtype=float)
+                            if is_dual:
+                                m2_label = hour_metrics_sel[1]
+                                m2_col, m2_title = METRIC_COLS[m2_label]
+                                c2_ser = df_hour_grouped[m2_col] if m2_col in df_hour_grouped.columns else pd.Series(dtype=float)
+                                dom1 = render_y_range_slider(c1_ser, "hour_line_m1", m1_title, c1_color)
+                                df_hour_grouped = filter_by_range(df_hour_grouped, m1_col, dom1, hour_no_zeros)
+                                dom2 = render_y_range_slider(c2_ser, "hour_line_m2", m2_title, c2_color)
+                                df_hour_grouped = filter_by_range(df_hour_grouped, m2_col, dom2, hour_no_zeros)
                             else:
-                                y_col, y_title = METRIC_COLS[hour_metric]
-                                chart_hour = base4.mark_line(color='#1f77b4', point=True).encode(
-                                    y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                    tooltip=['hora:O', f'{y_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                dom1 = render_y_range_slider(c1_ser, "hour_line_m1", m1_title, c1_color)
+                                dom2 = None
+                                df_hour_grouped = filter_by_range(df_hour_grouped, m1_col, dom1, hour_no_zeros)
+
+                            if df_hour_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                base4 = alt.Chart(df_hour_grouped).encode(
+                                    x=alt.X('hora:O', title='Franja Horària (h)', sort=ordre_nocturn, axis=alt.Axis(labelAngle=0, grid=False))
+                                )
+                                if is_dual:
+                                    line1 = base4.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(titleColor=c1_color, grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined)
+                                    )
+                                    line2 = base4.mark_line(color=c2_color, point=True).encode(
+                                        y=alt.Y(f'{m2_col}:Q', title=m2_title,
+                                            axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
+                                            scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
+                                    )
+                                    chart_hour = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                else:
+                                    chart_hour = base4.mark_line(color=c1_color, point=True).encode(
+                                        y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                            axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                            scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                        tooltip=['hora:O', f'{m1_col}:Q']
+                                    ).properties(height=400).configure_axis(grid=False)
                         else:
                             df_hour_grouped = calculate_ecological_indices(df_hour, df_unfiltered, ["hora", "species"])
-                            
-                            if hour_metric == "Comptatge i Buzz (Doble Eix)":
-                                hour_metric = "Comptatge"
-                                
-                            y_col, y_title = METRIC_COLS[hour_metric]
-                            
-                            chart_hour = alt.Chart(df_hour_grouped).mark_bar(size=22).encode(
-                                x=alt.X('hora:O', title='Franja Horària (h)', sort=ordre_nocturn, axis=alt.Axis(labelAngle=0, grid=False)),
-                                y=alt.Y(f'{y_col}:Q', title=y_title, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])),
-                                color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
-                                tooltip=['hora:O', 'species:N', f'{y_col}:Q']
-                            ).properties(height=400).configure_axis(grid=False)
-                            
-                        st.altair_chart(chart_hour, use_container_width=True)
+                            df_hour_grouped = enrich_grouped_with_env(df_hour, ["hora", "species"], df_hour_grouped)
+                            c1_ser = df_hour_grouped[m1_col] if m1_col in df_hour_grouped.columns else pd.Series(dtype=float)
+                            dom1 = render_y_range_slider(c1_ser, "hour_bar_m1", m1_title, c1_color)
+                            df_hour_grouped = filter_by_range(df_hour_grouped, m1_col, dom1, hour_no_zeros)
+
+                            if df_hour_grouped.empty:
+                                st.info("No hi ha punts dins del rang seleccionat o després d'aplicar 'No mostrar zeros'.")
+                            else:
+                                chart_hour = alt.Chart(df_hour_grouped).mark_bar(size=22).encode(
+                                    x=alt.X('hora:O', title='Franja Horària (h)', sort=ordre_nocturn, axis=alt.Axis(labelAngle=0, grid=False)),
+                                    y=alt.Y(f'{m1_col}:Q', title=m1_title,
+                                        axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
+                                        scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
+                                    color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
+                                    tooltip=['hora:O', 'species:N', f'{m1_col}:Q']
+                                ).properties(height=400).configure_axis(grid=False)
+
+                        if chart_hour is not None:
+                            st.altair_chart(chart_hour, use_container_width=True)
 
         # --- Àrea 5: Regressió Linial ---
         st.subheader("Anàlisi de Regressió Linial")
@@ -682,18 +907,13 @@ def main():
                 
                 st.markdown("##### Variables de Regressió")
                 reg_y_var = st.selectbox("Variable Eix Y (Dependent):", list(METRIC_COLS.keys()), key="reg_y_var")
-                
-                # Mapa de variables climàtiques per l'eix X
-                clim_vars_ca = {
-                    "Temperatura (temp)": "temp",
-                    "Humitat (rel_humidity)": "rel_humidity",
-                    "Vent (wind_speed)": "wind_speed"
-                }
-                reg_x_var_ca = st.selectbox("Variable Eix X (Independent):", list(clim_vars_ca.keys()), key="reg_x_var")
-                reg_x_col = clim_vars_ca[reg_x_var_ca]
+
+                reg_x_var = st.selectbox("Variable Eix X (Independent):", list(METRIC_COLS.keys()), key="reg_x_var")
+                reg_x_col = METRIC_COLS.get(reg_x_var, ("total_count", ""))[0]
                 
                 st.markdown("##### Opcions d'Anàlisi")
                 reg_outliers = st.checkbox("Mostra tots els punts (Inclou Outliers)", value=True, key="reg_outliers")
+                reg_no_zeros = st.checkbox("No mostrar zeros", value=False, key="reg_no_zeros")
                 
             with col5_graf:
                 st.markdown("##### Resultat Gràfic i Estadístiques")
@@ -722,6 +942,9 @@ def main():
                     
                     # Eliminar files on X o Y siguin NaN per no falsejar la regressió
                     df_reg_clean = df_reg.dropna(subset=[x_col, y_col]).copy()
+
+                    if reg_no_zeros and not df_reg_clean.empty:
+                        df_reg_clean = df_reg_clean[(df_reg_clean[x_col] != 0) & (df_reg_clean[y_col] != 0)]
                     
                     if not reg_outliers and not df_reg_clean.empty:
                         # Mètode IQR (Interquartile Range) per netejar outliers en ambdues variables
@@ -765,7 +988,7 @@ def main():
                         
                         # Gràfic de dispersió (Scatter)
                         scatter = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
-                            x=alt.X(f'{x_col}:Q', title=reg_x_var_ca, scale=alt.Scale(zero=False)),
+                            x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
                             y=alt.Y(f'{y_col}:Q', title=reg_y_var),
                             tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
                         )
@@ -807,8 +1030,20 @@ def main():
                 heat_metric_lbl = st.selectbox("Mètrica (color):", list(HEAT_METRICS.keys()), key="heat_metric")
                 heat_x_lbl = st.selectbox("Dimensió eix X:", list(HEAT_DIMS.values()), index=2, key="heat_x")
                 heat_y_lbl = st.selectbox("Dimensió eix Y:", list(HEAT_DIMS.values()), index=0, key="heat_y")
-                heat_scheme = st.selectbox("Paleta de color:", ["viridis", "plasma", "turbo", "magma", "inferno", "cividis"], key="heat_scheme")
+                heat_scheme = st.selectbox("Paleta de color:", ["viridis", "plasma", "turbo", "magma", "inferno", "cividis"], index=2, key="heat_scheme")
                 heat_show_text = st.checkbox("Mostra els valors a les cel·les", value=True, key="heat_show_text")
+                if "heat_font_size" not in st.session_state:
+                    st.session_state["heat_font_size"] = 10
+                st.markdown("Mida de la font dels valors")
+                font_col_minus, font_col_value, font_col_plus = st.columns([1, 2, 1])
+                with font_col_minus:
+                    if st.button("-", key="heat_font_minus"):
+                        st.session_state["heat_font_size"] = max(6, st.session_state["heat_font_size"] - 1)
+                with font_col_value:
+                    st.caption(f"{st.session_state['heat_font_size']} pt")
+                with font_col_plus:
+                    if st.button("+", key="heat_font_plus"):
+                        st.session_state["heat_font_size"] = min(36, st.session_state["heat_font_size"] + 1)
 
             with col6_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -869,7 +1104,7 @@ def main():
                         chart_heat = heat_rects
                         if heat_show_text:
                             text_fmt = ".0f" if metric_col in ("total_count", "total_buzz") else ".2f"
-                            heat_text = base_heat.mark_text(baseline='middle', fontSize=10).encode(
+                            heat_text = base_heat.mark_text(baseline='middle', fontSize=st.session_state["heat_font_size"]).encode(
                                 text=alt.Text(f'{metric_col}:Q', format=text_fmt),
                                 color=alt.value('white'),
                             )
