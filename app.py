@@ -485,7 +485,7 @@ def main():
                                 ).properties(height=400).configure_axis(grid=False)
 
                         if chart_sp is not None:
-                            st.altair_chart(chart_sp, use_container_width=True)
+                            st.altair_chart(chart_sp, width="stretch")
 
         # --- Àrea 2: Comptatge i Buzz per localització ---
         st.subheader("Comptatge i Buzz per localització")
@@ -612,7 +612,7 @@ def main():
                                 ).properties(height=400).configure_axis(grid=False)
 
                         if chart_loc is not None:
-                            st.altair_chart(chart_loc, use_container_width=True)
+                            st.altair_chart(chart_loc, width="stretch")
 
         # --- Àrea 3: Comptatge i Buzz per data ---
         st.subheader("Comptatge i Buzz per data")
@@ -744,7 +744,7 @@ def main():
                                 ).properties(height=400).configure_axis(grid=False)
 
                         if chart_date is not None:
-                            st.altair_chart(chart_date, use_container_width=True)
+                            st.altair_chart(chart_date, width="stretch")
 
         # --- Àrea 4: Comptatge i Buzz per franja horària ---
         st.subheader("Comptatge i Buzz per franja horària")
@@ -880,7 +880,7 @@ def main():
                                 ).properties(height=400).configure_axis(grid=False)
 
                         if chart_hour is not None:
-                            st.altair_chart(chart_hour, use_container_width=True)
+                            st.altair_chart(chart_hour, width="stretch")
 
         # --- Àrea 5: Regressió Linial ---
         st.subheader("Anàlisi de Regressió Linial")
@@ -939,9 +939,16 @@ def main():
                     
                     y_col = METRIC_COLS.get(reg_y_var, ("total_count", ""))[0]
                     x_col = reg_x_col
+                    import numpy as np
                     
                     # Eliminar files on X o Y siguin NaN per no falsejar la regressió
                     df_reg_clean = df_reg.dropna(subset=[x_col, y_col]).copy()
+                    df_reg_clean[x_col] = pd.to_numeric(df_reg_clean[x_col], errors='coerce')
+                    df_reg_clean[y_col] = pd.to_numeric(df_reg_clean[y_col], errors='coerce')
+                    df_reg_clean = df_reg_clean.dropna(subset=[x_col, y_col])
+                    df_reg_clean = df_reg_clean[
+                        np.isfinite(df_reg_clean[x_col]) & np.isfinite(df_reg_clean[y_col])
+                    ]
 
                     if reg_no_zeros and not df_reg_clean.empty:
                         df_reg_clean = df_reg_clean[(df_reg_clean[x_col] != 0) & (df_reg_clean[y_col] != 0)]
@@ -952,6 +959,8 @@ def main():
                             Q1 = df_reg_clean[col].quantile(0.25)
                             Q3 = df_reg_clean[col].quantile(0.75)
                             IQR = Q3 - Q1
+                            if pd.isna(IQR):
+                                continue
                             lower_bound = Q1 - 1.5 * IQR
                             upper_bound = Q3 + 1.5 * IQR
                             df_reg_clean = df_reg_clean[(df_reg_clean[col] >= lower_bound) & (df_reg_clean[col] <= upper_bound)]
@@ -964,44 +973,71 @@ def main():
                         import numpy as np
                         
                         # Càlcul de la regressió lineal
-                        x_vals = df_reg_clean[x_col].values
-                        y_vals = df_reg_clean[y_col].values
+                        x_vals = df_reg_clean[x_col].to_numpy(dtype=float)
+                        y_vals = df_reg_clean[y_col].to_numpy(dtype=float)
+
+                        finite_mask = np.isfinite(x_vals) & np.isfinite(y_vals)
+                        if not finite_mask.all():
+                            df_reg_clean = df_reg_clean.loc[finite_mask].copy()
+                            x_vals = x_vals[finite_mask]
+                            y_vals = y_vals[finite_mask]
+
+                        if len(x_vals) < 2 or np.unique(x_vals).size < 2:
+                            st.info("No hi ha prou variabilitat a l'eix X per calcular una regressió lineal fiable.")
+                            chart_reg = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
+                                x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
+                                y=alt.Y(f'{y_col}:Q', title=reg_y_var),
+                                tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
+                            ).properties(height=350)
+                            st.altair_chart(chart_reg, width="stretch")
+                        else:
+                            try:
+                                # polyfit grau 1 retorna [pendent, intercept]
+                                m, b = np.polyfit(x_vals, y_vals, 1)
+                            except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                                st.warning("No s'ha pogut ajustar la regressió per inestabilitat numèrica. Es mostren només els punts.")
+                                chart_reg = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
+                                    x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
+                                    y=alt.Y(f'{y_col}:Q', title=reg_y_var),
+                                    tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
+                                ).properties(height=350)
+                                st.altair_chart(chart_reg, width="stretch")
+                            else:
+                                # R2 robust: if one axis is constant, correlation is undefined.
+                                if np.std(x_vals) == 0 or np.std(y_vals) == 0:
+                                    r_squared = 0.0
+                                else:
+                                    corr_matrix = np.corrcoef(x_vals, y_vals)
+                                    corr = corr_matrix[0, 1]
+                                    r_squared = float(corr ** 2) if np.isfinite(corr) else 0.0
                         
-                        # polyfit grau 1 retorna [pendent, intercept]
-                        m, b = np.polyfit(x_vals, y_vals, 1)
-                        
-                        # R2
-                        corr_matrix = np.corrcoef(x_vals, y_vals)
-                        corr = corr_matrix[0, 1]
-                        r_squared = corr ** 2
-                        
-                        # Afegim la columna de predicció per pintar la línia
-                        df_reg_clean['prediction'] = m * df_reg_clean[x_col] + b
-                        
-                        # Mostrem els coeficients en caixes de mètriques
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Pendent (m)", f"{m:.4f}")
-                        c2.metric("Intercepció (b)", f"{b:.4f}")
-                        c3.metric("Coef. Determinació (R²)", f"{r_squared:.4f}")
-                        
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        
-                        # Gràfic de dispersió (Scatter)
-                        scatter = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
-                            x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
-                            y=alt.Y(f'{y_col}:Q', title=reg_y_var),
-                            tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
-                        )
-                        
-                        # Línia de regressió
-                        regression_line = alt.Chart(df_reg_clean).mark_line(color='red', size=3).encode(
-                            x=f'{x_col}:Q',
-                            y='prediction:Q'
-                        )
-                        
-                        chart_reg = (scatter + regression_line).properties(height=350)
-                        
-                        st.altair_chart(chart_reg, use_container_width=True)
+                                # Afegim la columna de predicció per pintar la línia
+                                df_reg_clean['prediction'] = m * df_reg_clean[x_col] + b
+
+                                # Mostrem els coeficients en caixes de mètriques
+                                c1, c2, c3 = st.columns(3)
+                                c1.metric("Pendent (m)", f"{m:.4f}")
+                                c2.metric("Intercepció (b)", f"{b:.4f}")
+                                c3.metric("Coef. Determinació (R²)", f"{r_squared:.4f}")
+
+                                st.markdown("<br>", unsafe_allow_html=True)
+
+                                # Gràfic de dispersió (Scatter)
+                                scatter = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
+                                    x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
+                                    y=alt.Y(f'{y_col}:Q', title=reg_y_var),
+                                    tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
+                                )
+
+                                # Línia de regressió
+                                regression_line = alt.Chart(df_reg_clean).mark_line(color='red', size=3).encode(
+                                    x=f'{x_col}:Q',
+                                    y='prediction:Q'
+                                )
+
+                                chart_reg = (scatter + regression_line).properties(height=350)
+
+                                st.altair_chart(chart_reg, width="stretch")
 
         # --- Àrea 6: Mapa de calor multidimensional ---
         st.subheader("Mapa de Calor Multidimensional")
@@ -1113,7 +1149,7 @@ def main():
                         n_rows = df_heat_grouped[heat_y_col].nunique()
                         chart_height = max(300, min(900, n_rows * 28))
                         chart_heat = chart_heat.properties(height=chart_height).configure_view(strokeWidth=0)
-                        st.altair_chart(chart_heat, use_container_width=True)
+                        st.altair_chart(chart_heat, width="stretch")
 
     # ---------------- TAB 2: ESTATUS ----------------
     with tab_estatus:
@@ -1161,7 +1197,7 @@ def main():
             try:
                 metrics_resp = supabase_client.table("weather_metrics").select("name_ca").order("name_ca").execute()
                 if metrics_resp.data:
-                    st.dataframe(pd.DataFrame(metrics_resp.data), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(metrics_resp.data), width="stretch", hide_index=True)
                 else:
                     st.info("Cap mètrica enregistrada.")
             except Exception as e:
@@ -1173,7 +1209,7 @@ def main():
             try:
                 stations_resp = supabase_client.table("weather_stations").select("name, longitude, latitude, altitude").order("name").execute()
                 if stations_resp.data:
-                    st.dataframe(pd.DataFrame(stations_resp.data), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(stations_resp.data), width="stretch", hide_index=True)
                 else:
                     st.info("Cap estació enregistrada.")
             except Exception as e:
@@ -1210,7 +1246,7 @@ def main():
                             tooltip=['Localització', 'Quantitat de Fitxers']
                         ).properties(height=350)
                         
-                        st.altair_chart(chart_loc, use_container_width=True)
+                        st.altair_chart(chart_loc, width="stretch")
                     else:
                         st.info("La columna 'locations.display_name' no s'ha trobat en els resultats del Join.")
                 else:
@@ -1276,7 +1312,7 @@ def main():
                         tooltip=[alt.Tooltip('mes_etiq:N', title='Mes'), alt.Tooltip('display_name:N', title='Localització'), alt.Tooltip('nombre_mostres:Q', title='Mostres')]
                     ).properties(height=450)
                     
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width="stretch")
                 else:
                     st.warning("La vista conté registres però falten els encapçalaments ('mes', 'display_name').")
             except Exception as e:
@@ -1720,14 +1756,14 @@ def main():
                         
                     # Dibuixar gràfic actiu
                     if chart is not None:
-                        st.altair_chart(chart, use_container_width=True)
+                        st.altair_chart(chart, width="stretch")
                     else:
                         st.info("No s'ha definit cap gràfic actiu (el tipus de gràfic és 'Sense gràfic'). Modifica el selector o demana-ho directament al xat!")
                         
                     # Desplegable per descarregar les dades filtrades
                     if df_filtered is not None and not df_filtered.empty:
                         with st.expander("Veure i descarregar dades filtrades (CSV)"):
-                            st.dataframe(df_filtered, use_container_width=True)
+                            st.dataframe(df_filtered, width="stretch")
                             csv_data = df_filtered.to_csv(index=False).encode('utf-8')
                             st.download_button(
                                 label="📥 Descarregar dades filtrades com a CSV",
