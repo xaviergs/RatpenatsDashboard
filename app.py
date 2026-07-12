@@ -1069,7 +1069,7 @@ def main():
                 heat_scheme = st.selectbox("Paleta de color:", ["viridis", "plasma", "turbo", "magma", "inferno", "cividis"], index=2, key="heat_scheme")
                 heat_show_text = st.checkbox("Mostra els valors a les cel·les", value=True, key="heat_show_text")
                 if "heat_font_size" not in st.session_state:
-                    st.session_state["heat_font_size"] = 10
+                    st.session_state["heat_font_size"] = 12
                 st.markdown("Mida de la font dels valors")
                 font_col_minus, font_col_value, font_col_plus = st.columns([1, 2, 1])
                 with font_col_minus:
@@ -1339,12 +1339,12 @@ def main():
         
         st.subheader("2. Esforç de Mostreig ($N$)")
         st.markdown("""
-        Per estandarditzar i comparar els índexs, l'aplicació mesura de manera dinàmica l'esforç d'observació efectiu ($N$).
-        Donat que el detector només es dispara amb el so, s'extreu el temps complet de l'actuació de cada sessió:
-        
-        1. **Agrupació:** S'identifiquen les hores úniques de sessió (per localització i data).
-        2. **Multiplicador:** S'assumeix una resolució o granularitat per cada hora (actualment establert a **60** intervals hipotètics, corresponent a 1 minut d'observació base).
-        3. **Fórmula Base:**  $N = \text{Hores Úniques} \\times 60$.
+        Per poder comparar correctament l'activitat entre espècies, localitzacions i períodes, l'aplicació calcula l'esforç de mostreig ($N$) de manera dinàmica segons els filtres actius.
+
+        En camp, l'AudioMoth registra informació en intervals de **5 segons**, però en aquest dashboard els resultats es treballen **agregats per hora**.
+
+        Per tant, **$N$ és simplement un comptatge de les mostres** dins de la selecció analitzada.
+        No s'aplica cap base temporal més fina (ni minuts ni segons) en el càlcul de $N$ per a OA i OT.
         """)
         
         st.subheader("3. Indicadors Ecològics d'Activitat")
