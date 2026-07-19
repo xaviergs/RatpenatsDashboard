@@ -1,5 +1,6 @@
 import os
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -299,46 +300,178 @@ def enrich_grouped_with_env(df_source, group_cols, df_grouped):
 @st.cache_data(ttl=900, show_spinner=False)
 def load_location_coordinates():
     """
-    Load coordinates from support tables and normalize to:
-    location_name, latitude, longitude, source_table.
+    Load coordinates from the locations_and_stations view and normalize to:
+    location_name, latitude, longitude.
     """
     client = init_connection()
-    candidate_tables = ["locations", "weather_stations"]
+    try:
+        resp = client.table("locations_and_stations").select("*").execute()
+        records = resp.data or []
+        if not records:
+            return pd.DataFrame(columns=["location_name", "latitude", "longitude"])
 
-    for table_name in candidate_tables:
-        try:
-            resp = client.table(table_name).select("*").execute()
-            records = resp.data or []
-            if not records:
-                continue
+        df_raw = pd.DataFrame(records)
+        name_col = next((c for c in ["location_name", "display_name", "name", "nom"] if c in df_raw.columns), None)
+        lat_col = next((c for c in ["latitude", "lat"] if c in df_raw.columns), None)
+        lon_col = next((c for c in ["longitude", "lon", "lng", "long"] if c in df_raw.columns), None)
 
-            df_raw = pd.DataFrame(records)
-            name_col = next((c for c in ["location_name", "display_name", "name", "nom"] if c in df_raw.columns), None)
-            lat_col = next((c for c in ["latitude", "lat"] if c in df_raw.columns), None)
-            lon_col = next((c for c in ["longitude", "lon", "lng", "long"] if c in df_raw.columns), None)
+        if not name_col or not lat_col or not lon_col:
+            return pd.DataFrame(columns=["location_name", "latitude", "longitude"])
 
-            if not name_col or not lat_col or not lon_col:
-                continue
+        # Keep every column from the view and normalize core fields for joins/map.
+        df_coords = df_raw.copy()
+        rename_map = {}
+        if name_col != "location_name":
+            rename_map[name_col] = "location_name"
+        if lat_col != "latitude":
+            rename_map[lat_col] = "latitude"
+        if lon_col != "longitude":
+            rename_map[lon_col] = "longitude"
+        if rename_map:
+            df_coords = df_coords.rename(columns=rename_map)
 
-            df_coords = df_raw[[name_col, lat_col, lon_col]].copy()
-            df_coords.columns = ["location_name", "latitude", "longitude"]
-            df_coords["location_name"] = df_coords["location_name"].astype(str).str.strip()
-            df_coords["latitude"] = pd.to_numeric(df_coords["latitude"], errors="coerce")
-            df_coords["longitude"] = pd.to_numeric(df_coords["longitude"], errors="coerce")
+        df_coords["location_name"] = df_coords["location_name"].astype(str).str.strip()
+        df_coords["latitude"] = pd.to_numeric(df_coords["latitude"], errors="coerce")
+        df_coords["longitude"] = pd.to_numeric(df_coords["longitude"], errors="coerce")
 
-            df_coords = df_coords[
-                (df_coords["location_name"] != "")
-                & df_coords["latitude"].notna()
-                & df_coords["longitude"].notna()
-            ].drop_duplicates(subset=["location_name"], keep="first")
+        df_coords = df_coords[
+            (df_coords["location_name"] != "")
+            & df_coords["latitude"].notna()
+            & df_coords["longitude"].notna()
+        ].drop_duplicates(subset=["location_name"], keep="first")
 
-            if not df_coords.empty:
-                df_coords["source_table"] = table_name
-                return df_coords
-        except Exception:
-            continue
+        return df_coords
+    except Exception:
+        return pd.DataFrame(columns=["location_name", "latitude", "longitude"])
 
-    return pd.DataFrame(columns=["location_name", "latitude", "longitude", "source_table"])
+
+def compute_metric_grouped(df_source: pd.DataFrame, metric_col: str, group_cols: list[str]) -> pd.DataFrame:
+    """
+    Compute map metric by groups using ecological indices when required.
+    """
+    derived_metrics = {"total_count", "total_buzz", "OA", "OT", "IA"}
+
+    if metric_col in derived_metrics:
+        df_metric = calculate_ecological_indices(df_source, df_source, group_cols)
+        if metric_col not in df_metric.columns:
+            return pd.DataFrame(columns=group_cols + [metric_col])
+        cols = [c for c in group_cols if c in df_metric.columns] + [metric_col]
+        return df_metric[cols].copy()
+
+    if metric_col not in df_source.columns:
+        return pd.DataFrame(columns=group_cols + [metric_col])
+
+    return df_source.groupby(group_cols, as_index=False)[metric_col].mean()
+
+
+def merge_metric_with_coordinates(df_metric: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge grouped metric dataframe with location coordinates view.
+    Keeps all metadata columns from locations_and_stations.
+    """
+    if df_metric.empty or "location_name" not in df_metric.columns:
+        return pd.DataFrame()
+
+    df_coords = load_location_coordinates()
+    if df_coords.empty:
+        return pd.DataFrame()
+
+    df_m = df_metric.copy()
+    df_m["join_key"] = df_m["location_name"].astype(str).str.strip().str.lower()
+
+    df_c = df_coords.copy()
+    df_c["join_key"] = df_c["location_name"].astype(str).str.strip().str.lower()
+    df_c = df_c.rename(columns={"location_name": "location_name_coords"})
+
+    df_m = df_m.rename(columns={"location_name": "location_name_metric"})
+    df_map = pd.merge(df_m, df_c, on="join_key", how="left")
+    df_map["location_name"] = df_map["location_name_metric"].fillna(df_map["location_name_coords"])
+    df_map = df_map[df_map["latitude"].notna() & df_map["longitude"].notna()].copy()
+    return df_map
+
+
+def build_map_detail_table(df_map: pd.DataFrame, metric_col: str) -> pd.DataFrame:
+    """
+    Prepare georeferenced detail table with full location view metadata.
+    """
+    if df_map.empty:
+        return df_map
+
+    display_df = df_map.copy()
+    drop_if_present = [
+        "join_key", "location_name_metric", "location_name_coords",
+        "color", "radius", "latitude_plot", "longitude_plot", "weight",
+        "species_rank", "species_count", "angle", "share_in_location",
+    ]
+    display_df = display_df.drop(columns=[c for c in drop_if_present if c in display_df.columns])
+
+    cols_first = ["location_name", "latitude", "longitude", metric_col]
+    cols_to_show = [c for c in cols_first if c in display_df.columns]
+    cols_to_show += [c for c in display_df.columns if c not in cols_to_show]
+    return display_df[cols_to_show]
+
+
+def render_species_legend(species_color: dict, title: str = "Llegenda d'espècies"):
+    """
+    Render an inline color-chip legend for species categories.
+    """
+    if not species_color:
+        return
+
+    chips = []
+    for species_name, rgba in species_color.items():
+        r, g, b, _a = rgba
+        safe_name = str(species_name).replace("<", "&lt;").replace(">", "&gt;")
+        chips.append(
+            f"<span style='display:inline-flex;align-items:center;margin:2px 8px 2px 0;'>"
+            f"<span style='width:10px;height:10px;border-radius:999px;background:rgb({r},{g},{b});display:inline-block;margin-right:6px;'></span>"
+            f"<span>{safe_name}</span></span>"
+        )
+
+    st.markdown(f"**{title}**", unsafe_allow_html=False)
+    st.markdown("".join(chips), unsafe_allow_html=True)
+
+
+def install_tab_persistence():
+        """
+        Persist and restore active Streamlit tab across reruns.
+        """
+        components.html(
+                """
+                <script>
+                (function () {
+                    const KEY = 'ratpenats_active_tab_idx';
+                    const root = window.parent.document;
+
+                    function bindAndRestore() {
+                        const tabs = root.querySelectorAll('button[data-baseweb="tab"]');
+                        if (!tabs || !tabs.length) return;
+
+                        tabs.forEach((tab, idx) => {
+                            if (!tab.dataset.ratpenatsBound) {
+                                tab.addEventListener('click', () => {
+                                    window.parent.sessionStorage.setItem(KEY, String(idx));
+                                });
+                                tab.dataset.ratpenatsBound = '1';
+                            }
+                        });
+
+                        const saved = parseInt(window.parent.sessionStorage.getItem(KEY) || '0', 10);
+                        if (Number.isFinite(saved) && saved >= 0 && saved < tabs.length) {
+                            const isSelected = tabs[saved].getAttribute('aria-selected') === 'true';
+                            if (!isSelected) tabs[saved].click();
+                        }
+                    }
+
+                    bindAndRestore();
+                    setTimeout(bindAndRestore, 60);
+                    setTimeout(bindAndRestore, 180);
+                    setTimeout(bindAndRestore, 360);
+                })();
+                </script>
+                """,
+                height=0,
+        )
 
 
 def main():
@@ -383,6 +516,7 @@ def main():
 
     # Create Layout Tabs
     tab_accions, tab_mapa, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "🗺️ Mapa", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
+    install_tab_persistence()
 
     # ---------------- TAB 1: ACCIONS ----------------
     with tab_accions:
@@ -1199,7 +1333,7 @@ def main():
     # ---------------- TAB 2: MAPA ----------------
     with tab_mapa:
         st.header("Visualització Geogràfica de Mètriques")
-        st.markdown("Mostra les mètriques per indret de mostreig sobre un mapa real i tria si vols representar-les per color o per radi.")
+        st.markdown("Filtra com sempre i escull el mode de representació del mapa per comparar espècies, intensitat o composició.")
 
         if df_full.empty:
             st.warning("No s'han pogut carregar les dades de ratpenats per a la visualització geogràfica.")
@@ -1231,23 +1365,58 @@ def main():
                     min_value=min_date_val,
                     max_value=max_date_val,
                     value=(min_date_val, max_date_val),
-                    key="map_dates"
+                    key="map_dates",
                 )
 
                 map_metric_label = st.selectbox("Mètrica:", list(METRIC_COLS.keys()), index=0, key="map_metric")
-                map_mode = st.radio("Representació:", ["Color", "Radi"], horizontal=True, key="map_mode")
+                map_render_mode = st.selectbox(
+                    "Visualització:",
+                    ["Bombolles per espècie", "Mapa d'escalfor"],
+                    index=0,
+                    key="map_render_mode",
+                )
                 map_no_zeros = st.checkbox("No mostrar zeros", value=False, key="map_no_zeros")
+                map_height = st.slider("Alçada del mapa (px)", min_value=520, max_value=1200, value=860, step=20, key="map_height")
 
-                if map_mode == "Color":
-                    base_radius = st.slider("Radi base del punt", min_value=150, max_value=2000, value=700, step=50, key="map_base_radius")
-                    min_radius = base_radius
-                    max_radius = base_radius
-                else:
+                # Force a taller map container and keep map gestures isolated from page scroll.
+                st.markdown(
+                    f"""
+                    <style>
+                    div[data-testid="stDeckGlJsonChart"] {{
+                        height: {int(map_height)}px !important;
+                        overscroll-behavior: contain;
+                    }}
+                    div[data-testid="stDeckGlJsonChart"] iframe {{
+                        height: {int(map_height)}px !important;
+                    }}
+                    div[data-testid="stDeckGlJsonChart"] canvas {{
+                        touch-action: none;
+                    }}
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if map_render_mode == "Bombolles per espècie":
                     min_radius = st.slider("Radi mínim", min_value=100, max_value=1500, value=250, step=50, key="map_min_radius")
                     max_radius = st.slider("Radi màxim", min_value=300, max_value=4000, value=1800, step=100, key="map_max_radius")
                     if max_radius <= min_radius:
                         max_radius = min_radius + 100
                         st.caption("S'ha ajustat el radi màxim perquè sigui superior al mínim.")
+                    radius_scale = st.selectbox("Escala del radi:", ["Arrel quadrada", "Lineal"], index=0, key="map_radius_scale")
+                    bubble_offset = st.checkbox("Separar espècies en la mateixa localització", value=True, key="map_bubble_offset")
+                    offset_m = st.slider("Separació (metres)", min_value=0, max_value=800, value=220, step=20, key="map_offset_m")
+                else:
+                    heat_radius = st.slider("Radi de calor (px)", min_value=20, max_value=220, value=95, step=5, key="map_heat_radius")
+                    heat_intensity = st.slider("Intensitat", min_value=0.2, max_value=5.0, value=1.4, step=0.1, key="map_heat_intensity")
+                    heat_threshold = st.slider("Llindar", min_value=0.0, max_value=1.0, value=0.03, step=0.01, key="map_heat_threshold")
+                    show_heat_points = st.checkbox("Mostrar punts de suport", value=True, key="map_show_heat_points")
+                    heat_palette = st.selectbox(
+                        "Paleta de colors (calor):",
+                        ["Inferno", "Viridis", "Turbo", "Blau -> Vermell", "Verd -> Groc -> Vermell"],
+                        index=0,
+                        key="map_heat_palette",
+                    )
 
             with col_map_view:
                 st.markdown("##### Mapa")
@@ -1266,92 +1435,81 @@ def main():
                     st.info("Cap registre coincideix amb els filtres seleccionats.")
                 else:
                     metric_col, metric_title = METRIC_COLS[map_metric_label]
-                    derived_metrics = {"total_count", "total_buzz", "OA", "OT", "IA"}
+                    if map_render_mode == "Bombolles per espècie":
+                        group_cols = ["location_name", "species"]
+                        df_metric = compute_metric_grouped(df_map_source, metric_col, group_cols)
 
-                    if metric_col in derived_metrics:
-                        df_metric = calculate_ecological_indices(df_map_source, df_map_source, ["location_name"])
-                        if metric_col not in df_metric.columns:
-                            st.warning("La mètrica seleccionada no s'ha pogut calcular.")
-                            df_metric = pd.DataFrame()
+                        if map_no_zeros and not df_metric.empty:
+                            df_metric = df_metric[pd.to_numeric(df_metric[metric_col], errors='coerce') != 0]
+
+                        if df_metric.empty:
+                            st.info("No hi ha valors per mostrar al mapa amb aquesta configuració.")
                         else:
-                            df_metric = df_metric[["location_name", metric_col]].copy()
-                    else:
-                        if metric_col not in df_map_source.columns:
-                            st.warning("La mètrica seleccionada no està disponible per a les dades filtrades.")
-                            df_metric = pd.DataFrame()
-                        else:
-                            df_metric = (
-                                df_map_source
-                                .groupby("location_name", as_index=False)[metric_col]
-                                .mean()
-                            )
-
-                    if map_no_zeros and not df_metric.empty:
-                        df_metric = df_metric[pd.to_numeric(df_metric[metric_col], errors='coerce') != 0]
-
-                    if df_metric.empty:
-                        st.info("No hi ha valors per mostrar al mapa amb aquesta configuració.")
-                    else:
-                        df_coords = load_location_coordinates()
-                        if df_coords.empty:
-                            st.warning("No s'han trobat coordenades vàlides a les taules de suport (locations o weather_stations).")
-                        else:
-                            df_metric = df_metric.copy()
-                            df_metric["join_key"] = df_metric["location_name"].astype(str).str.strip().str.lower()
-
-                            df_coords_m = df_coords.copy()
-                            df_coords_m["join_key"] = df_coords_m["location_name"].astype(str).str.strip().str.lower()
-                            df_coords_m = df_coords_m.rename(columns={"location_name": "location_name_coords"})
-
-                            df_metric = df_metric.rename(columns={"location_name": "location_name_metric"})
-                            df_map = pd.merge(df_metric, df_coords_m, on="join_key", how="left")
-                            df_map["location_name"] = df_map["location_name_metric"].fillna(df_map["location_name_coords"])
-
-                            df_map = df_map[
-                                df_map["latitude"].notna() & df_map["longitude"].notna()
-                            ].copy()
+                            df_map = merge_metric_with_coordinates(df_metric)
                             df_map[metric_col] = pd.to_numeric(df_map[metric_col], errors='coerce')
                             df_map = df_map[df_map[metric_col].notna()].copy()
 
                             if df_map.empty:
                                 st.warning("No s'han pogut enllaçar localitzacions amb coordenades per als filtres actuals.")
                             else:
+                                df_map["species"] = df_map["species"].fillna("Sense espècie").astype(str)
+                                palette = [
+                                    [31, 119, 180, 190], [255, 127, 14, 190], [44, 160, 44, 190],
+                                    [214, 39, 40, 190], [148, 103, 189, 190], [140, 86, 75, 190],
+                                    [227, 119, 194, 190], [127, 127, 127, 190], [188, 189, 34, 190],
+                                    [23, 190, 207, 190],
+                                ]
+                                species_values = sorted(df_map["species"].unique().tolist())
+                                species_color = {s: palette[i % len(palette)] for i, s in enumerate(species_values)}
+                                df_map["color"] = df_map["species"].astype(str).map(species_color)
+
                                 vals = df_map[metric_col].astype(float)
                                 vmin = float(vals.min())
                                 vmax = float(vals.max())
-
                                 if vmax > vmin:
                                     norm = ((vals - vmin) / (vmax - vmin)).clip(0, 1)
                                 else:
                                     norm = pd.Series([0.5] * len(df_map), index=df_map.index)
 
-                                if map_mode == "Color":
-                                    df_map["radius"] = float(min_radius)
-                                    df_map["color"] = [
-                                        [int(30 + 210 * n), int(90 + 90 * (1 - n)), int(255 - 180 * n), 190]
-                                        for n in norm.to_list()
-                                    ]
-                                else:
-                                    df_map["radius"] = min_radius + norm * (max_radius - min_radius)
-                                    df_map["color"] = [[31, 119, 180, 190] for _ in range(len(df_map))]
+                                if radius_scale == "Arrel quadrada":
+                                    norm = np.sqrt(norm)
+                                df_map["radius"] = min_radius + norm * (max_radius - min_radius)
+
+                                df_map["latitude_plot"] = df_map["latitude"].astype(float)
+                                df_map["longitude_plot"] = df_map["longitude"].astype(float)
+                                if bubble_offset and offset_m > 0:
+                                    df_map = df_map.sort_values(by=["location_name", metric_col], ascending=[True, False]).copy()
+                                    df_map["species_rank"] = df_map.groupby("location_name").cumcount()
+                                    df_map["species_count"] = df_map.groupby("location_name")["species"].transform("count")
+                                    df_map["angle"] = (2 * np.pi * df_map["species_rank"]) / df_map["species_count"].clip(lower=1)
+
+                                    lat_scale = offset_m / 111320.0
+                                    safe_cos = np.cos(np.radians(df_map["latitude_plot"].astype(float))).clip(lower=0.2)
+                                    lon_scale = offset_m / (111320.0 * safe_cos)
+
+                                    df_map["latitude_plot"] = df_map["latitude_plot"] + lat_scale * np.sin(df_map["angle"])
+                                    df_map["longitude_plot"] = df_map["longitude_plot"] + lon_scale * np.cos(df_map["angle"])
 
                                 df_map["metric_value"] = np.round(df_map[metric_col].astype(float), 4)
-
                                 map_center_lat = float(df_map["latitude"].mean())
                                 map_center_lon = float(df_map["longitude"].mean())
+
                                 layer = pdk.Layer(
                                     "ScatterplotLayer",
                                     data=df_map,
-                                    get_position='[longitude, latitude]',
+                                    get_position='[longitude_plot, latitude_plot]',
                                     get_fill_color='color',
                                     get_radius='radius',
                                     pickable=True,
                                     stroked=True,
-                                    get_line_color=[30, 30, 30],
+                                    get_line_color=[25, 25, 25],
                                     line_width_min_pixels=1,
                                 )
 
-                                tooltip_html = f"<b>{{location_name}}</b><br/>{metric_title}: {{metric_value}}"
+                                tooltip_html = (
+                                    f"<b>{{location_name}}</b><br/>Espècie: {{species}}"
+                                    f"<br/>{metric_title}: {{metric_value}}"
+                                )
                                 deck = pdk.Deck(
                                     map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
                                     initial_view_state=pdk.ViewState(
@@ -1360,6 +1518,12 @@ def main():
                                         zoom=9,
                                         pitch=0,
                                     ),
+                                    parameters={
+                                        "scrollZoom": False,
+                                        "dragPan": True,
+                                        "doubleClickZoom": False,
+                                        "touchRotate": False,
+                                    },
                                     layers=[layer],
                                     tooltip={
                                         "html": tooltip_html,
@@ -1367,17 +1531,121 @@ def main():
                                     },
                                 )
                                 st.pydeck_chart(deck, width="stretch")
+                                st.caption("Navegació: arrossega per desplaçar el mapa. El zoom es fa amb controls del trackpad/pellizc al mapa (scroll de pàgina desactivat dins del mapa).")
 
-                                c_map_1, c_map_2, c_map_3 = st.columns(3)
-                                c_map_1.metric("Punts al mapa", f"{len(df_map)}")
-                                c_map_2.metric("Valor mínim", f"{vmin:.4f}")
-                                c_map_3.metric("Valor màxim", f"{vmax:.4f}")
+                                render_species_legend(species_color, "Llegenda d'espècies")
 
                                 with st.expander("Detall de dades georeferenciades"):
-                                    cols_to_show = ["location_name", "latitude", "longitude", metric_col]
-                                    if "source_table" in df_map.columns:
-                                        cols_to_show.append("source_table")
-                                    st.dataframe(df_map[cols_to_show].sort_values(by=metric_col, ascending=False), width="stretch", hide_index=True)
+                                    detail_df = build_map_detail_table(df_map, metric_col)
+                                    st.dataframe(detail_df.sort_values(by=metric_col, ascending=False), width="stretch", hide_index=True)
+
+                    elif map_render_mode == "Mapa d'escalfor":
+                        group_cols = ["location_name"]
+                        df_metric = compute_metric_grouped(df_map_source, metric_col, group_cols)
+
+                        if map_no_zeros and not df_metric.empty:
+                            df_metric = df_metric[pd.to_numeric(df_metric[metric_col], errors='coerce') != 0]
+
+                        if df_metric.empty:
+                            st.info("No hi ha valors per mostrar al mapa amb aquesta configuració.")
+                        else:
+                            df_map = merge_metric_with_coordinates(df_metric)
+                            df_map[metric_col] = pd.to_numeric(df_map[metric_col], errors='coerce')
+                            df_map = df_map[df_map[metric_col].notna()].copy()
+
+                            if df_map.empty:
+                                st.warning("No s'han pogut enllaçar localitzacions amb coordenades per als filtres actuals.")
+                            else:
+                                vals = df_map[metric_col].astype(float)
+                                if len(vals) > 1:
+                                    p_low = float(np.percentile(vals, 5))
+                                    p_high = float(np.percentile(vals, 95))
+                                else:
+                                    p_low = float(vals.iloc[0])
+                                    p_high = float(vals.iloc[0])
+
+                                if p_high > p_low:
+                                    norm = ((vals - p_low) / (p_high - p_low)).clip(0, 1)
+                                else:
+                                    norm = pd.Series([0.65] * len(df_map), index=df_map.index)
+
+                                df_map["weight"] = norm + 0.02
+                                df_map["support_radius"] = 140 + 520 * norm
+                                df_map["metric_value"] = np.round(vals, 4)
+
+                                heat_color_ranges = {
+                                    "Inferno": [[0, 0, 4], [31, 12, 72], [85, 15, 109], [136, 34, 106], [186, 54, 85], [227, 89, 51], [249, 140, 10], [252, 195, 58], [252, 255, 164]],
+                                    "Viridis": [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [109, 205, 89], [180, 222, 44], [253, 231, 37]],
+                                    "Turbo": [[48, 18, 59], [50, 64, 147], [31, 122, 184], [37, 173, 129], [133, 209, 63], [222, 216, 45], [251, 170, 24], [239, 96, 21], [180, 4, 38]],
+                                    "Blau -> Vermell": [[49, 54, 149], [69, 117, 180], [116, 173, 209], [171, 217, 233], [224, 243, 248], [254, 224, 144], [253, 174, 97], [244, 109, 67], [215, 48, 39], [165, 0, 38]],
+                                    "Verd -> Groc -> Vermell": [[0, 104, 55], [26, 152, 80], [102, 189, 99], [166, 217, 106], [217, 239, 139], [255, 255, 191], [254, 224, 139], [253, 174, 97], [244, 109, 67], [215, 48, 39], [165, 0, 38]],
+                                }
+                                color_range = heat_color_ranges.get(heat_palette, heat_color_ranges["Inferno"])
+
+                                map_center_lat = float(df_map["latitude"].mean())
+                                map_center_lon = float(df_map["longitude"].mean())
+
+                                heat_layer = pdk.Layer(
+                                    "HeatmapLayer",
+                                    data=df_map,
+                                    get_position='[longitude, latitude]',
+                                    get_weight='weight',
+                                    intensity=float(heat_intensity),
+                                    threshold=float(heat_threshold),
+                                    radiusPixels=int(heat_radius),
+                                    colorRange=color_range,
+                                    aggregation="SUM",
+                                )
+
+                                layers = [heat_layer]
+                                if show_heat_points:
+                                    support_layer = pdk.Layer(
+                                        "ScatterplotLayer",
+                                        data=df_map,
+                                        get_position='[longitude, latitude]',
+                                        get_fill_color=[18, 18, 18, 95],
+                                        get_radius='support_radius',
+                                        pickable=True,
+                                        stroked=True,
+                                        get_line_color=[245, 245, 245],
+                                        line_width_min_pixels=1,
+                                    )
+                                    layers.append(support_layer)
+
+                                tooltip_html = f"<b>{{location_name}}</b><br/>{metric_title}: {{metric_value}}"
+                                deck = pdk.Deck(
+                                    map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                                    initial_view_state=pdk.ViewState(
+                                        latitude=map_center_lat,
+                                        longitude=map_center_lon,
+                                        zoom=9,
+                                        pitch=25,
+                                    ),
+                                    parameters={
+                                        "scrollZoom": False,
+                                        "dragPan": True,
+                                        "doubleClickZoom": False,
+                                        "touchRotate": False,
+                                    },
+                                    layers=layers,
+                                    tooltip={
+                                        "html": tooltip_html,
+                                        "style": {"backgroundColor": "#111111", "color": "#ffffff"},
+                                    },
+                                )
+                                st.pydeck_chart(deck, width="stretch")
+                                st.caption("Navegació: arrossega per desplaçar el mapa. El zoom amb scroll queda desactivat per evitar conflictes amb la pàgina.")
+
+                                st.caption(
+                                    f"Escala calor ({heat_palette}) · rang visualitzat: {float(vals.min()):.4f} - {float(vals.max()):.4f}"
+                                )
+
+                                with st.expander("Detall de dades georeferenciades"):
+                                    detail_df = build_map_detail_table(df_map, metric_col)
+                                    st.dataframe(detail_df.sort_values(by=metric_col, ascending=False), width="stretch", hide_index=True)
+
+                    else:
+                        st.info("Mode de visualització no disponible.")
 
     # ---------------- TAB 3: ESTATUS ----------------
     with tab_estatus:
@@ -1429,124 +1697,19 @@ def main():
                 else:
                     st.info("Cap mètrica enregistrada.")
             except Exception as e:
-                st.error(f"Error llegint mètriques: {e}")
-                
+                st.error(f"Error carregant mètriques: {e}")
+
         with col_list2:
-            st.markdown("**Xarxa d'Estacions**")
-            st.caption("Ubicació i altitud on es recullen dades.")
+            st.markdown("**Vista georeferenciada (locations_and_stations)**")
+            st.caption("Mostra de registres retornats per la vista per a validació de camps.")
             try:
-                stations_resp = supabase_client.table("weather_stations").select("name, longitude, latitude, altitude").order("name").execute()
-                if stations_resp.data:
-                    st.dataframe(pd.DataFrame(stations_resp.data), width="stretch", hide_index=True)
+                loc_view_resp = supabase_client.table("locations_and_stations").select("*").limit(200).execute()
+                if loc_view_resp.data:
+                    st.dataframe(pd.DataFrame(loc_view_resp.data), width="stretch", hide_index=True)
                 else:
-                    st.info("Cap estació enregistrada.")
+                    st.info("La vista locations_and_stations no retorna registres.")
             except Exception as e:
-                st.error(f"Error llegint estacions: {e}")
-
-        st.divider()
-        st.subheader("Registres per Localització")
-        st.caption("Mostra la quantitat de fitxers únics del registre (file_registry) agrupats per localització.")
-        
-        with st.spinner("Verificant i agrupant dades..."):
-            try:
-                # To simulate the GROUP BY logic natively with Supabase's PostgREST library,
-                # we fetch the joined relation and process the grouping using pandas.
-                fr_locations_resp = supabase_client.table("file_registry").select("file_name, locations!inner(display_name)").execute()
-                fr_records = fr_locations_resp.data
-                
-                if fr_records:
-                    # Flatten the JSON dynamically
-                    df_fr = pd.json_normalize(fr_records)
-                    
-                    # Ensure the join successfully brought the display_name column
-                    if 'locations.display_name' in df_fr.columns:
-                        # Achieve the same result as:
-                        # SELECT LO.display_name, COUNT(DISTINCT FR.file_name)
-                        # FROM file_registry INNER JOIN locations ON ... GROUP BY 1 ORDER BY 1
-                        df_grouped = df_fr.groupby('locations.display_name')['file_name'].nunique().reset_index()
-                        df_grouped.columns = ['Localització', 'Quantitat de Fitxers']
-                        df_grouped = df_grouped.sort_values(by='Localització')
-                        
-                        import altair as alt
-                        chart_loc = alt.Chart(df_grouped).mark_bar().encode(
-                            x=alt.X('Quantitat de Fitxers:Q', title='Quantitat de Fitxers'),
-                            y=alt.Y('Localització:N', title='Localització'),
-                            tooltip=['Localització', 'Quantitat de Fitxers']
-                        ).properties(height=350)
-                        
-                        st.altair_chart(chart_loc, width="stretch")
-                    else:
-                        st.info("La columna 'locations.display_name' no s'ha trobat en els resultats del Join.")
-                else:
-                    st.info("Actualment no hi ha cap arxiu vinculat a localitzacions.")
-            except Exception as e:
-                st.error(f"Error aglutinant els fitxers per localització: {e}")
-
-        st.divider()
-        st.subheader("Observacions de Ratpenats")
-        st.caption("Mostra el nombre de mostres per mes i localització.")
-        
-        @st.cache_data(ttl=300, show_spinner=False)
-        def carregar_agrupacio_ratpenats():
-            client = init_connection()
-            try:
-                # Query directa sobre la view sol·licitada per l'usuari
-                all_records = []
-                offset = 0
-                max_rows = 1000
-                
-                while True:
-                    res = client.table("days_by_location").select("*").range(offset, offset + max_rows - 1).execute()
-                    if res.data:
-                        all_records.extend(res.data)
-                    
-                    if not res.data or len(res.data) < max_rows:
-                        break
-                        
-                    offset += max_rows
-                    
-                if not all_records:
-                    return pd.DataFrame()
-                
-                df_view = pd.DataFrame(all_records)
-                
-                # Assegurar format correcte a la columna 'mes' si ve en format string des de la View SQL
-                if 'mes' in df_view.columns:
-                    df_view['mes'] = pd.to_datetime(df_view['mes'])
-                    
-                return df_view
-            except Exception as e:
-                st.error(f"Error de lectura a la vista days_by_location: {e}")
-                return pd.DataFrame()
-
-        with st.spinner("Carregant observacions..."):
-            df_gen = carregar_agrupacio_ratpenats()
-            
-        if not df_gen.empty:
-            try:
-                df_net = df_gen.dropna(subset=['mes', 'display_name']).copy()
-                
-                if not df_net.empty:
-                    # Mapeig manual en català pur sense dependre de les llibreries regionals del servidor
-                    mesos_ca = {1: 'Gen', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Oct', 11: 'Nov', 12: 'Des'}
-                    df_net['mes_etiq'] = df_net['mes'].dt.month.map(mesos_ca) + df_net['mes'].dt.strftime('%y')
-                    
-                    import altair as alt
-                    chart = alt.Chart(df_net).mark_circle(opacity=0.8).encode(
-                        x=alt.X('mes_etiq:N', sort=alt.EncodingSortField(field='mes', op='min', order='ascending'), title='Mes', axis=alt.Axis(labelAngle=-45)),
-                        y=alt.Y('display_name:N', title='Localització'),
-                        size=alt.Size('nombre_mostres:Q', title='Nombre de mostres', scale=alt.Scale(range=[50, 1000])),
-                        color=alt.Color('display_name:N', legend=None),
-                        tooltip=[alt.Tooltip('mes_etiq:N', title='Mes'), alt.Tooltip('display_name:N', title='Localització'), alt.Tooltip('nombre_mostres:Q', title='Mostres')]
-                    ).properties(height=450)
-                    
-                    st.altair_chart(chart, width="stretch")
-                else:
-                    st.warning("La vista conté registres però falten els encapçalaments ('mes', 'display_name').")
-            except Exception as e:
-                st.error(f"Error processant les columnes per crear la gràfica (verifica els noms de la vista): {e}")
-        else:
-            st.warning("No s'han pogut carregar les dades o bé la vista està buida.")
+                st.error(f"Error carregant la vista locations_and_stations: {e}")
 
     # ---------------- TAB 3: SYLLABUS / METODOLOGIA ----------------
     with tab_syllabus:

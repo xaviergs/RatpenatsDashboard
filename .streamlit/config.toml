@@ -5,6 +5,7 @@ font = "sans serif"
 
 [server]
 headless = true
+address = "127.0.0.1"
 enableXsrfProtection = true
 # The workspace filesystem in this dev container is mounted over 9P, where
 # Streamlit's default file watcher issues blocking stat/RPC calls that can freeze
