@@ -296,6 +296,51 @@ def enrich_grouped_with_env(df_source, group_cols, df_grouped):
     return pd.merge(df_grouped, env_agg, on=valid_group_cols, how='left')
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_location_coordinates():
+    """
+    Load coordinates from support tables and normalize to:
+    location_name, latitude, longitude, source_table.
+    """
+    client = init_connection()
+    candidate_tables = ["locations", "weather_stations"]
+
+    for table_name in candidate_tables:
+        try:
+            resp = client.table(table_name).select("*").execute()
+            records = resp.data or []
+            if not records:
+                continue
+
+            df_raw = pd.DataFrame(records)
+            name_col = next((c for c in ["location_name", "display_name", "name", "nom"] if c in df_raw.columns), None)
+            lat_col = next((c for c in ["latitude", "lat"] if c in df_raw.columns), None)
+            lon_col = next((c for c in ["longitude", "lon", "lng", "long"] if c in df_raw.columns), None)
+
+            if not name_col or not lat_col or not lon_col:
+                continue
+
+            df_coords = df_raw[[name_col, lat_col, lon_col]].copy()
+            df_coords.columns = ["location_name", "latitude", "longitude"]
+            df_coords["location_name"] = df_coords["location_name"].astype(str).str.strip()
+            df_coords["latitude"] = pd.to_numeric(df_coords["latitude"], errors="coerce")
+            df_coords["longitude"] = pd.to_numeric(df_coords["longitude"], errors="coerce")
+
+            df_coords = df_coords[
+                (df_coords["location_name"] != "")
+                & df_coords["latitude"].notna()
+                & df_coords["longitude"].notna()
+            ].drop_duplicates(subset=["location_name"], keep="first")
+
+            if not df_coords.empty:
+                df_coords["source_table"] = table_name
+                return df_coords
+        except Exception:
+            continue
+
+    return pd.DataFrame(columns=["location_name", "latitude", "longitude", "source_table"])
+
+
 def main():
     st.title("Ratpenats al Cap de Creus")
     st.markdown(f"**Port de Desplegament**: `{port}` (Punt per a Cloud Run)")
@@ -337,7 +382,7 @@ def main():
     df_full = st.session_state.df_full
 
     # Create Layout Tabs
-    tab_accions, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
+    tab_accions, tab_mapa, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "🗺️ Mapa", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
 
     # ---------------- TAB 1: ACCIONS ----------------
     with tab_accions:
@@ -1151,7 +1196,190 @@ def main():
                         chart_heat = chart_heat.properties(height=chart_height).configure_view(strokeWidth=0)
                         st.altair_chart(chart_heat, width="stretch")
 
-    # ---------------- TAB 2: ESTATUS ----------------
+    # ---------------- TAB 2: MAPA ----------------
+    with tab_mapa:
+        st.header("Visualització Geogràfica de Mètriques")
+        st.markdown("Mostra les mètriques per indret de mostreig sobre un mapa real i tria si vols representar-les per color o per radi.")
+
+        if df_full.empty:
+            st.warning("No s'han pogut carregar les dades de ratpenats per a la visualització geogràfica.")
+        else:
+            import datetime
+            import numpy as np
+            import pydeck as pdk
+
+            all_species = sorted(df_full['species'].dropna().unique().tolist()) if 'species' in df_full.columns else []
+            all_locations = sorted(df_full['location_name'].dropna().unique().tolist()) if 'location_name' in df_full.columns else []
+
+            min_date_val = df_full['observation_date'].dropna().min() if 'observation_date' in df_full.columns else None
+            max_date_val = df_full['observation_date'].dropna().max() if 'observation_date' in df_full.columns else None
+            if pd.isna(min_date_val) or pd.isna(max_date_val):
+                min_date_val = datetime.date(2020, 1, 1)
+                max_date_val = datetime.date.today()
+            if min_date_val == max_date_val:
+                min_date_val = min_date_val - datetime.timedelta(days=1)
+                max_date_val = max_date_val + datetime.timedelta(days=1)
+
+            col_map_filters, col_map_view = st.columns([1, 3])
+
+            with col_map_filters:
+                st.markdown("##### Paràmetres")
+                map_species_sel = st.multiselect("Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="map_species")
+                map_locations_sel = st.multiselect("Localització(ns):", ["Totes"] + all_locations, default=["Totes"], key="map_locations")
+                map_dates_sel = st.slider(
+                    "Rang de dates:",
+                    min_value=min_date_val,
+                    max_value=max_date_val,
+                    value=(min_date_val, max_date_val),
+                    key="map_dates"
+                )
+
+                map_metric_label = st.selectbox("Mètrica:", list(METRIC_COLS.keys()), index=0, key="map_metric")
+                map_mode = st.radio("Representació:", ["Color", "Radi"], horizontal=True, key="map_mode")
+                map_no_zeros = st.checkbox("No mostrar zeros", value=False, key="map_no_zeros")
+
+                if map_mode == "Color":
+                    base_radius = st.slider("Radi base del punt", min_value=150, max_value=2000, value=700, step=50, key="map_base_radius")
+                    min_radius = base_radius
+                    max_radius = base_radius
+                else:
+                    min_radius = st.slider("Radi mínim", min_value=100, max_value=1500, value=250, step=50, key="map_min_radius")
+                    max_radius = st.slider("Radi màxim", min_value=300, max_value=4000, value=1800, step=100, key="map_max_radius")
+                    if max_radius <= min_radius:
+                        max_radius = min_radius + 100
+                        st.caption("S'ha ajustat el radi màxim perquè sigui superior al mínim.")
+
+            with col_map_view:
+                st.markdown("##### Mapa")
+                df_map_source = df_full.copy()
+                if "Totes" not in map_locations_sel and map_locations_sel:
+                    df_map_source = df_map_source[df_map_source['location_name'].isin(map_locations_sel)]
+                if "Totes" not in map_species_sel and map_species_sel:
+                    df_map_source = df_map_source[df_map_source['species'].isin(map_species_sel)]
+
+                start_d, end_d = map_dates_sel
+                df_map_source = df_map_source[
+                    (df_map_source['observation_date'] >= start_d) & (df_map_source['observation_date'] <= end_d)
+                ]
+
+                if df_map_source.empty:
+                    st.info("Cap registre coincideix amb els filtres seleccionats.")
+                else:
+                    metric_col, metric_title = METRIC_COLS[map_metric_label]
+                    derived_metrics = {"total_count", "total_buzz", "OA", "OT", "IA"}
+
+                    if metric_col in derived_metrics:
+                        df_metric = calculate_ecological_indices(df_map_source, df_map_source, ["location_name"])
+                        if metric_col not in df_metric.columns:
+                            st.warning("La mètrica seleccionada no s'ha pogut calcular.")
+                            df_metric = pd.DataFrame()
+                        else:
+                            df_metric = df_metric[["location_name", metric_col]].copy()
+                    else:
+                        if metric_col not in df_map_source.columns:
+                            st.warning("La mètrica seleccionada no està disponible per a les dades filtrades.")
+                            df_metric = pd.DataFrame()
+                        else:
+                            df_metric = (
+                                df_map_source
+                                .groupby("location_name", as_index=False)[metric_col]
+                                .mean()
+                            )
+
+                    if map_no_zeros and not df_metric.empty:
+                        df_metric = df_metric[pd.to_numeric(df_metric[metric_col], errors='coerce') != 0]
+
+                    if df_metric.empty:
+                        st.info("No hi ha valors per mostrar al mapa amb aquesta configuració.")
+                    else:
+                        df_coords = load_location_coordinates()
+                        if df_coords.empty:
+                            st.warning("No s'han trobat coordenades vàlides a les taules de suport (locations o weather_stations).")
+                        else:
+                            df_metric = df_metric.copy()
+                            df_metric["join_key"] = df_metric["location_name"].astype(str).str.strip().str.lower()
+
+                            df_coords_m = df_coords.copy()
+                            df_coords_m["join_key"] = df_coords_m["location_name"].astype(str).str.strip().str.lower()
+                            df_coords_m = df_coords_m.rename(columns={"location_name": "location_name_coords"})
+
+                            df_metric = df_metric.rename(columns={"location_name": "location_name_metric"})
+                            df_map = pd.merge(df_metric, df_coords_m, on="join_key", how="left")
+                            df_map["location_name"] = df_map["location_name_metric"].fillna(df_map["location_name_coords"])
+
+                            df_map = df_map[
+                                df_map["latitude"].notna() & df_map["longitude"].notna()
+                            ].copy()
+                            df_map[metric_col] = pd.to_numeric(df_map[metric_col], errors='coerce')
+                            df_map = df_map[df_map[metric_col].notna()].copy()
+
+                            if df_map.empty:
+                                st.warning("No s'han pogut enllaçar localitzacions amb coordenades per als filtres actuals.")
+                            else:
+                                vals = df_map[metric_col].astype(float)
+                                vmin = float(vals.min())
+                                vmax = float(vals.max())
+
+                                if vmax > vmin:
+                                    norm = ((vals - vmin) / (vmax - vmin)).clip(0, 1)
+                                else:
+                                    norm = pd.Series([0.5] * len(df_map), index=df_map.index)
+
+                                if map_mode == "Color":
+                                    df_map["radius"] = float(min_radius)
+                                    df_map["color"] = [
+                                        [int(30 + 210 * n), int(90 + 90 * (1 - n)), int(255 - 180 * n), 190]
+                                        for n in norm.to_list()
+                                    ]
+                                else:
+                                    df_map["radius"] = min_radius + norm * (max_radius - min_radius)
+                                    df_map["color"] = [[31, 119, 180, 190] for _ in range(len(df_map))]
+
+                                df_map["metric_value"] = np.round(df_map[metric_col].astype(float), 4)
+
+                                map_center_lat = float(df_map["latitude"].mean())
+                                map_center_lon = float(df_map["longitude"].mean())
+                                layer = pdk.Layer(
+                                    "ScatterplotLayer",
+                                    data=df_map,
+                                    get_position='[longitude, latitude]',
+                                    get_fill_color='color',
+                                    get_radius='radius',
+                                    pickable=True,
+                                    stroked=True,
+                                    get_line_color=[30, 30, 30],
+                                    line_width_min_pixels=1,
+                                )
+
+                                tooltip_html = f"<b>{{location_name}}</b><br/>{metric_title}: {{metric_value}}"
+                                deck = pdk.Deck(
+                                    map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                                    initial_view_state=pdk.ViewState(
+                                        latitude=map_center_lat,
+                                        longitude=map_center_lon,
+                                        zoom=9,
+                                        pitch=0,
+                                    ),
+                                    layers=[layer],
+                                    tooltip={
+                                        "html": tooltip_html,
+                                        "style": {"backgroundColor": "#111111", "color": "#ffffff"},
+                                    },
+                                )
+                                st.pydeck_chart(deck, width="stretch")
+
+                                c_map_1, c_map_2, c_map_3 = st.columns(3)
+                                c_map_1.metric("Punts al mapa", f"{len(df_map)}")
+                                c_map_2.metric("Valor mínim", f"{vmin:.4f}")
+                                c_map_3.metric("Valor màxim", f"{vmax:.4f}")
+
+                                with st.expander("Detall de dades georeferenciades"):
+                                    cols_to_show = ["location_name", "latitude", "longitude", metric_col]
+                                    if "source_table" in df_map.columns:
+                                        cols_to_show.append("source_table")
+                                    st.dataframe(df_map[cols_to_show].sort_values(by=metric_col, ascending=False), width="stretch", hide_index=True)
+
+    # ---------------- TAB 3: ESTATUS ----------------
     with tab_estatus:
         st.subheader("Salut i Metadades de la Base de Dades")
         st.markdown("A continuació es mostren les mètriques generals de les taules connectades.")
