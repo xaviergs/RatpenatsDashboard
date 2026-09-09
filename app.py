@@ -1579,6 +1579,9 @@ def main():
                                 fmap = _build_folium_map(map_center_lat, map_center_lon)
 
                                 # HeatMap expects [lat, lon, weight] tuples.
+                                # Leaflet.heat isn't compatible with L.Control.Layers (crashes on setZIndex),
+                                # so it's excluded from the layer switcher via control=False but still renders.
+                                heat_group = folium.FeatureGroup(name="Mapa de calor", show=True, control=False)
                                 heat_data = df_map[["latitude", "longitude", "weight"]].values.tolist()
                                 HeatMap(
                                     heat_data,
@@ -1586,7 +1589,8 @@ def main():
                                     blur=int(heat_blur),
                                     gradient=gradient,
                                     min_opacity=0.35,
-                                ).add_to(fmap)
+                                ).add_to(heat_group)
+                                heat_group.add_to(fmap)
 
                                 if show_heat_points:
                                     for _, row in df_map.iterrows():
