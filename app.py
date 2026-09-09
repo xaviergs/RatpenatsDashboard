@@ -1344,6 +1344,33 @@ def main():
             from folium.plugins import HeatMap
             from streamlit_folium import st_folium
 
+            def _build_folium_map(center_lat: float, center_lon: float) -> folium.Map:
+                """Base map with mouse-wheel zoom and a basemap switcher (Clar/Topogràfic/Satèl·lit), no API key needed."""
+                fmap = folium.Map(
+                    location=[center_lat, center_lon],
+                    zoom_start=11,
+                    tiles=None,
+                    scrollWheelZoom=True,
+                    control_scale=True,
+                )
+                folium.TileLayer(tiles="OpenStreetMap", name="Clar", overlay=False, control=True).add_to(fmap)
+                folium.TileLayer(
+                    tiles="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+                    attr="Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
+                    name="Topogràfic",
+                    overlay=False,
+                    control=True,
+                ).add_to(fmap)
+                folium.TileLayer(
+                    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                    attr="Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+                    name="Satèl·lit",
+                    overlay=False,
+                    control=True,
+                ).add_to(fmap)
+                folium.LayerControl(position="topright", collapsed=True).add_to(fmap)
+                return fmap
+
             all_species = sorted(df_full['species'].dropna().unique().tolist()) if 'species' in df_full.columns else []
             all_locations = sorted(df_full['location_name'].dropna().unique().tolist()) if 'location_name' in df_full.columns else []
 
@@ -1476,13 +1503,7 @@ def main():
                                 map_center_lat = float(df_map["latitude"].mean())
                                 map_center_lon = float(df_map["longitude"].mean())
 
-                                fmap = folium.Map(
-                                    location=[map_center_lat, map_center_lon],
-                                    zoom_start=11,
-                                    tiles="OpenStreetMap",
-                                    scrollWheelZoom=False,
-                                    control_scale=True,
-                                )
+                                fmap = _build_folium_map(map_center_lat, map_center_lon)
                                 for _, row in df_map.iterrows():
                                     hex_color = "#{:02x}{:02x}{:02x}".format(*row["color"][:3])
                                     folium.CircleMarker(
@@ -1501,7 +1522,7 @@ def main():
                                     ).add_to(fmap)
 
                                 st_folium(fmap, width=None, height=int(map_height), returned_objects=[], key="map_bubbles")
-                                st.caption("Navegació: arrossega per desplaçar el mapa i fes servir els controls +/- per fer zoom.")
+                                st.caption("Navegació: arrossega per desplaçar, fes scroll amb el ratolí per fer zoom i tria l'estil de mapa amb el control de capes (cantonada superior dreta).")
 
                                 render_species_legend(species_color, "Llegenda d'espècies")
 
@@ -1555,13 +1576,7 @@ def main():
                                 map_center_lat = float(df_map["latitude"].mean())
                                 map_center_lon = float(df_map["longitude"].mean())
 
-                                fmap = folium.Map(
-                                    location=[map_center_lat, map_center_lon],
-                                    zoom_start=11,
-                                    tiles="OpenStreetMap",
-                                    scrollWheelZoom=False,
-                                    control_scale=True,
-                                )
+                                fmap = _build_folium_map(map_center_lat, map_center_lon)
 
                                 # HeatMap expects [lat, lon, weight] tuples.
                                 heat_data = df_map[["latitude", "longitude", "weight"]].values.tolist()
@@ -1587,7 +1602,7 @@ def main():
                                         ).add_to(fmap)
 
                                 st_folium(fmap, width=None, height=int(map_height), returned_objects=[], key="map_heat")
-                                st.caption("Navegació: arrossega per desplaçar el mapa i fes servir els controls +/- per fer zoom.")
+                                st.caption("Navegació: arrossega per desplaçar, fes scroll amb el ratolí per fer zoom i tria l'estil de mapa amb el control de capes (cantonada superior dreta).")
 
                                 st.caption(
                                     f"Escala calor ({heat_palette}) · rang visualitzat: {float(vals.min()):.4f} - {float(vals.max()):.4f}"
