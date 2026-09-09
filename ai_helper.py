@@ -65,6 +65,22 @@ class QueryAnalysisSchema(BaseModel):
         default=False,
         description="Si és True, el gràfic tindrà dos eixos Y independents per comparar dues mètriques amb escales diferents."
     )
+    color_by: Optional[str] = Field(
+        default=None,
+        description="Columna per desglossar per color ('species' o 'location_name'). Nul si s'ha d'escollir automàticament."
+    )
+    aggregation: Optional[str] = Field(
+        default="auto",
+        description="Funció d'agregació per a la mètrica: 'auto', 'sum' o 'mean'. 'auto' aplica la lògica per defecte segons la mètrica."
+    )
+    filter_hours: Optional[List[int]] = Field(
+        default=None,
+        description="Llista d'hores (0-23) a filtrar. Nul si no s'especifica cap franja horària concreta."
+    )
+    top_n: Optional[int] = Field(
+        default=None,
+        description="Si l'usuari demana un rànquing (ex: 'top 5 espècies'), nombre màxim de categories a mostrar ordenades per la mètrica. Nul si no s'especifica."
+    )
 
 def init_gemini_client():
     """
@@ -158,6 +174,12 @@ INSTRUCCIONS DE SEGURETAT I FORMAT:
 3. Redacta la 'conversational_answer', l'explanation i la 'chart_recommendation_reason' en català de forma clara, professional i concisa.
 4. Si l'usuari et fa una pregunta sobre el context de la conversa, utilitza l'historial del xat que et passem.
 5. El camp 'chart_recommendation_reason' ha de ser sempre una justificació vàlida i meaningful de la visualització triada, inclús quan chart_type='cap'.
+
+CAMPS OPCIONALS ADDICIONALS:
+- 'color_by': indica 'species' o 'location_name' si l'usuari vol forçar explícitament el desglossament per color. Deixa'l nul si no ho especifica.
+- 'aggregation': 'sum' o 'mean' si l'usuari ho demana explícitament (ex: 'mitjana de temperatura'). Per defecte 'auto'.
+- 'filter_hours': llista d'hores (0-23) si l'usuari restringeix a una franja horària concreta (ex: 'entre les 22h i les 24h').
+- 'top_n': nombre enter si l'usuari demana un rànquing (ex: 'top 5 espècies amb més comptatge').
 """
 
     # Use model from environment variable or default to gemini-3.5-flash
@@ -248,6 +270,30 @@ def _normalize_analysis(data: dict) -> dict:
         normalized["use_dual_axis"] = False
         normalized["secondary_metric"] = None
 
+    # Normalize newer optional fields so older/partial LLM responses don't fail validation.
+    normalized.setdefault("color_by", None)
+    if normalized.get("color_by") not in ("species", "location_name", None):
+        normalized["color_by"] = None
+
+    normalized["aggregation"] = normalized.get("aggregation") or "auto"
+    if normalized["aggregation"] not in ("auto", "sum", "mean"):
+        normalized["aggregation"] = "auto"
+
+    hours = normalized.get("filter_hours")
+    if isinstance(hours, list):
+        try:
+            normalized["filter_hours"] = [int(h) for h in hours if 0 <= int(h) <= 23]
+        except (TypeError, ValueError):
+            normalized["filter_hours"] = None
+    else:
+        normalized["filter_hours"] = None
+
+    top_n = normalized.get("top_n")
+    try:
+        normalized["top_n"] = int(top_n) if top_n else None
+    except (TypeError, ValueError):
+        normalized["top_n"] = None
+
     return normalized
 
 
@@ -320,11 +366,13 @@ def calculate_indices_for_df(df_target, df_unfiltered, group_cols):
     
     return df_grouped
 
-def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSchema):
+def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSchema, chart_style: dict | None = None):
     """
     Applies filters specified by the QueryAnalysisSchema and creates an Altair chart
-    suitable for the active dashboard panel.
+    suitable for the active dashboard panel. `chart_style` holds optional cosmetic
+    overrides coming from the manual style controls in the UI.
     """
+    chart_style = chart_style or {}
     if df.empty:
         return pd.DataFrame(), None, "Sense dades disponibles."
         
@@ -363,7 +411,13 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
             active_filters_txt.append(f"Fins a: {analysis.filter_end_date}")
         except Exception:
             pass
-            
+
+    # 3b. Apply Hours Filter
+    if analysis.filter_hours:
+        df_filtered = df_filtered[df_filtered['observation_hour'].isin(analysis.filter_hours)]
+        hours_txt = ', '.join(str(h) for h in analysis.filter_hours)
+        active_filters_txt.append(f"Hores: {hours_txt}")
+
     # 4. If resulting df is empty, return early
     if df_filtered.empty:
         return pd.DataFrame(), None, "Cap registre no coincideix amb els filtres indicats pel xat-bot."
@@ -404,7 +458,10 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
     # If grouping by location but species are multiple, we might want color by species (and vice-versa)
     color_col = None
     if not (analysis.use_dual_axis and analysis.secondary_metric):
-        if x_col != 'species' and (not analysis.filter_species or len(analysis.filter_species) > 1):
+        if analysis.color_by in ('species', 'location_name') and analysis.color_by != x_col:
+            grouping_cols.append(analysis.color_by)
+            color_col = analysis.color_by
+        elif x_col != 'species' and (not analysis.filter_species or len(analysis.filter_species) > 1):
             grouping_cols.append('species')
             color_col = 'species'
         elif x_col != 'location_name' and (not analysis.filter_locations or len(analysis.filter_locations) > 1):
@@ -422,10 +479,29 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         missing_cols += [c for c in [analysis.secondary_metric] if c not in df_grouped.columns]
     if missing_cols:
         return df_grouped, None, f"Les columnes {missing_cols} no s'han pogut calcular per a la visualització."
-        
+
+    # 6b. Apply Top N ranking (categories with the highest primary metric value)
+    if analysis.top_n and analysis.top_n > 0 and len(df_grouped) > analysis.top_n:
+        df_grouped = df_grouped.sort_values(by=metric_col, ascending=False).head(analysis.top_n).copy()
+        active_filters_txt.append(f"Top {analysis.top_n}")
+
     # 7. Generate Altair Chart
     chart = None
     if analysis.chart_type != "cap":
+        # Resolve cosmetic overrides coming from the manual style panel, with sane defaults.
+        primary_color = chart_style.get("primary_color") or "#1f77b4"
+        secondary_color = chart_style.get("secondary_color") or "#ff7f0e"
+        height = chart_style.get("height") or 400
+        opacity = chart_style.get("opacity", 0.85)
+        point_size = chart_style.get("point_size", 80)
+        label_angle = chart_style.get("label_angle", -45)
+        log_scale = chart_style.get("log_scale", False)
+        show_grid = chart_style.get("show_grid", True)
+        show_points = chart_style.get("show_points", True)
+        interactive = chart_style.get("interactive", True)
+
+        y_scale = alt.Scale(type="log") if log_scale else alt.Undefined
+
         # Order hours nocturnally if that is the X axis
         sort_order = None
         if x_col == 'hora':
@@ -436,14 +512,18 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         x_altair_type = 'O' if x_is_ordinal else 'T'
         x_shorthand = f'{x_col}:{x_altair_type}'
 
-        x_encoding = alt.X(x_shorthand, title=x_label)
+        x_axis_kwargs = {"labelAngle": label_angle}
+        x_encoding = alt.X(x_shorthand, title=x_label, axis=alt.Axis(**x_axis_kwargs))
         if sort_order:
-            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order)
+            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order, axis=alt.Axis(**x_axis_kwargs))
             
-        y_encoding = alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
+        y_encoding = alt.Y(
+            f'{metric_col}:Q', title=metric_label, scale=y_scale,
+            axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])
+        )
         
         # Color encoding
-        color_encoding = alt.Color(f'{color_col}:N', title="Llegenda") if color_col else alt.value('#1f77b4')
+        color_encoding = alt.Color(f'{color_col}:N', title="Llegenda") if color_col else alt.value(primary_color)
         
         # FIX: Tooltip usa x_shorthand per garantir que el tipus coincideix sempre amb l'encoding X
         tooltip_list = [
@@ -481,46 +561,48 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
                     alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
                 ]
 
-                line_primary = base.mark_line(color="#1f77b4", size=2, point=True).encode(
-                    y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor="#1f77b4", grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
+                line_primary = base.mark_line(color=primary_color, size=2, point=show_points, opacity=opacity).encode(
+                    y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor=primary_color, grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
                     tooltip=dual_tooltip_primary
                 )
                 
-                line_secondary = base.mark_line(color="#ff7f0e", size=2, point=True).encode(
-                    y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor="#ff7f0e", orient="right", grid=False)),
+                line_secondary = base.mark_line(color=secondary_color, size=2, point=show_points, opacity=opacity).encode(
+                    y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor=secondary_color, orient="right", grid=False)),
                     tooltip=dual_tooltip_secondary
                 )
                 
                 chart = alt.layer(line_primary, line_secondary).resolve_scale(y="independent").properties(
-                    height=400,
+                    height=height,
                     title=f"{metric_label} vs {secondary_metric_label} per {x_label}"
                 )
             else:
-                base_chart = alt.Chart(df_grouped).mark_line(point=True).encode(
+                base_chart = alt.Chart(df_grouped).mark_line(point=show_points, opacity=opacity).encode(
                     x=x_encoding,
                     y=y_encoding,
                     color=color_encoding,
                     tooltip=tooltip_list
                 )
-                chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+                chart = base_chart.properties(height=height, title=f"{metric_label} per {x_label}")
         elif analysis.chart_type == "dispersió":
-            base_chart = alt.Chart(df_grouped).mark_circle(size=80, opacity=0.7).encode(
+            base_chart = alt.Chart(df_grouped).mark_circle(size=point_size, opacity=opacity).encode(
                 x=x_encoding,
                 y=y_encoding,
                 color=color_encoding,
                 tooltip=tooltip_list
             )
-            chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+            chart = base_chart.properties(height=height, title=f"{metric_label} per {x_label}")
         else: # Default is barres
-            base_chart = alt.Chart(df_grouped).mark_bar().encode(
+            base_chart = alt.Chart(df_grouped).mark_bar(opacity=opacity).encode(
                 x=x_encoding,
                 y=y_encoding,
                 color=color_encoding,
                 tooltip=tooltip_list
             )
-            chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+            chart = base_chart.properties(height=height, title=f"{metric_label} per {x_label}")
             
-        chart = chart.configure_axis(grid=False).configure_title(fontSize=16, anchor='start')
+        chart = chart.configure_axis(grid=show_grid).configure_title(fontSize=16, anchor='start')
+        if interactive:
+            chart = chart.interactive()
         
     filters_summary = " | ".join(active_filters_txt) + f" | Mètrica: {metric_label}"
     return df_grouped, chart, filters_summary
