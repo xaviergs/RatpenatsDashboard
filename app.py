@@ -1479,7 +1479,7 @@ def main():
                                 fmap = folium.Map(
                                     location=[map_center_lat, map_center_lon],
                                     zoom_start=11,
-                                    tiles="CartoDB positron",
+                                    tiles="OpenStreetMap",
                                     scrollWheelZoom=False,
                                     control_scale=True,
                                 )
@@ -1558,7 +1558,7 @@ def main():
                                 fmap = folium.Map(
                                     location=[map_center_lat, map_center_lon],
                                     zoom_start=11,
-                                    tiles="CartoDB positron",
+                                    tiles="OpenStreetMap",
                                     scrollWheelZoom=False,
                                     control_scale=True,
                                 )
