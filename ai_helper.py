@@ -65,22 +65,6 @@ class QueryAnalysisSchema(BaseModel):
         default=False,
         description="Si és True, el gràfic tindrà dos eixos Y independents per comparar dues mètriques amb escales diferents."
     )
-    color_by: Optional[str] = Field(
-        default=None,
-        description="Dimensió per la qual desglossar el color/llegenda del gràfic: 'species', 'location_name', o None (sense desglossament per color). Posa None si use_dual_axis és True o si l'usuari vol un únic agregat net."
-    )
-    aggregation: str = Field(
-        default="auto",
-        description="Mètode d'agregació de la mètrica: 'sum' (recomanat per total_count i total_buzz), 'mean' (recomanat per temp, rel_humidity, wind_speed, percip_mm), 'max', 'min', o 'auto' (dedueix automàticament segons la mètrica)."
-    )
-    filter_hours: Optional[List[int]] = Field(
-        default=None,
-        description="Llista d'hores (0-23) a incloure al filtre. Nul si l'usuari no especifica cap franja horària. Exemple: de 21h a 23h seria [21, 22, 23]."
-    )
-    top_n: Optional[int] = Field(
-        default=None,
-        description="Si l'usuari demana un rànquing o les 'top N' categories (ex: 'les 5 espècies amb més activitat'), indica el nombre N. Nul si no es demana cap rànquing limitat."
-    )
 
 def init_gemini_client():
     """
@@ -91,88 +75,6 @@ def init_gemini_client():
     if not api_key:
         raise ValueError("No s'ha trobat la clau GEMINI_API_KEY. Afegeix-la a Streamlit Secrets o al fitxer .env local.")
     genai.configure(api_key=api_key)
-
-
-def _extract_response_text(response) -> str:
-    """
-    Safely extract the text payload from a Gemini response.
-    Raises a descriptive error if the model returned no usable candidate
-    (e.g. blocked by safety filters or empty output), instead of letting
-    the bare `response.text` accessor raise an opaque exception.
-    """
-    # Detect prompt-level blocking first.
-    feedback = getattr(response, "prompt_feedback", None)
-    block_reason = getattr(feedback, "block_reason", None) if feedback else None
-    if block_reason:
-        raise ValueError(f"La petició ha estat bloquejada per Gemini (motiu: {block_reason}).")
-
-    candidates = getattr(response, "candidates", None) or []
-    if not candidates:
-        raise ValueError("Gemini no ha retornat cap resposta. Torna-ho a provar o reformula la consulta.")
-
-    # Reconstruct text from candidate parts when available.
-    try:
-        return response.text
-    except Exception:
-        parts_text = []
-        for cand in candidates:
-            content = getattr(cand, "content", None)
-            for part in getattr(content, "parts", []) or []:
-                txt = getattr(part, "text", None)
-                if txt:
-                    parts_text.append(txt)
-        if not parts_text:
-            raise ValueError("Gemini ha retornat una resposta buida o sense text utilitzable.")
-        return "".join(parts_text)
-
-
-# Allowed values, kept in sync with QueryAnalysisSchema and the chart builder.
-_METRIC_ENUM = ["total_count", "total_buzz", "OA", "OT", "IA", "temp", "rel_humidity", "wind_speed", "percip_mm"]
-_X_AXIS_ENUM = ["species", "location_name", "observation_date", "month_year", "observation_hour"]
-_CHART_ENUM = ["barres", "línies", "dispersió", "mapa_calor", "bombolles", "cap"]
-_AGG_ENUM = ["sum", "mean", "max", "min", "auto"]
-_DIMENSION_ENUM = ["species", "location_name"]
-
-
-def _build_response_schema():
-    """
-    Build the Gemini response schema directly as a protos.Schema.
-
-    IMPORTANT: Passing the Pydantic model class as `response_schema` raises
-    `Unknown field for Schema: default` because Pydantic injects `default`/`anyOf`
-    keys that the Gemini proto Schema does not support. Building the proto Schema
-    manually bypasses that broken conversion (the library passes protos.Schema
-    instances through untouched).
-    """
-    from google.generativeai import protos
-    T = protos.Type
-
-    def s(**kw):
-        return protos.Schema(**kw)
-
-    return s(
-        type=T.OBJECT,
-        properties={
-            "explanation": s(type=T.STRING, description="Explicació molt curta en català dels filtres i mètrica aplicats al gràfic."),
-            "filter_species": s(type=T.ARRAY, items=s(type=T.STRING), nullable=True, description="Llista d'espècies exactes a filtrar. Nul si es refereix a totes."),
-            "filter_locations": s(type=T.ARRAY, items=s(type=T.STRING), nullable=True, description="Llista de localitzacions exactes a filtrar. Nul si totes."),
-            "filter_start_date": s(type=T.STRING, nullable=True, description="Data d'inici en format YYYY-MM-DD. Nul si no s'especifica."),
-            "filter_end_date": s(type=T.STRING, nullable=True, description="Data final en format YYYY-MM-DD. Nul si no s'especifica."),
-            "metric": s(type=T.STRING, enum=_METRIC_ENUM, format="enum", description="Mètrica principal demanada pel gràfic."),
-            "x_axis": s(type=T.STRING, enum=_X_AXIS_ENUM, format="enum", description="Dimensió de l'eix X."),
-            "chart_type": s(type=T.STRING, enum=_CHART_ENUM, format="enum", description="Tipus de gràfic: barres, línies, dispersió, mapa_calor (heatmap de dues dimensions), bombolles (gràfic multidimensional), o cap."),
-            "chart_recommendation_reason": s(type=T.STRING, description="Justificació breu en català del tipus de gràfic escollit."),
-            "conversational_answer": s(type=T.STRING, nullable=True, description="Resposta explicativa en català si l'usuari fa una pregunta concreta."),
-            "secondary_metric": s(type=T.STRING, enum=_METRIC_ENUM, format="enum", nullable=True, description="Segona mètrica per a l'eix Y secundari (dual axis) o per la mida de les bombolles. Nul si no s'aplica."),
-            "use_dual_axis": s(type=T.BOOLEAN, description="True si el gràfic ha de tenir dos eixos Y independents per comparar dues mètriques."),
-            "color_by": s(type=T.STRING, enum=_DIMENSION_ENUM, format="enum", nullable=True, description="Dimensió per desglossar el color/llegenda, o segona dimensió de l'eix Y en mapes de calor. Nul si no s'aplica."),
-            "aggregation": s(type=T.STRING, enum=_AGG_ENUM, format="enum", description="Mètode d'agregació de la mètrica: sum, mean, max, min o auto."),
-            "filter_hours": s(type=T.ARRAY, items=s(type=T.INTEGER), nullable=True, description="Llista d'hores (0-23) a incloure. Nul si no s'especifica franja horària."),
-            "top_n": s(type=T.INTEGER, nullable=True, description="Nombre N per a rànquings 'top N'. Nul si no es demana rànquing limitat."),
-        },
-        required=["explanation", "metric", "x_axis", "chart_type", "chart_recommendation_reason"],
-    )
-
 
 def analyze_query_with_llm(user_query: str, chat_history: list, df_full: pd.DataFrame) -> QueryAnalysisSchema:
     """
@@ -256,28 +158,10 @@ INSTRUCCIONS DE SEGURETAT I FORMAT:
 3. Redacta la 'conversational_answer', l'explanation i la 'chart_recommendation_reason' en català de forma clara, professional i concisa.
 4. Si l'usuari et fa una pregunta sobre el context de la conversa, utilitza l'historial del xat que et passem.
 5. El camp 'chart_recommendation_reason' ha de ser sempre una justificació vàlida i meaningful de la visualització triada, inclús quan chart_type='cap'.
-
-RAONAMENT PAS A PAS (segueix aquest ordre mental abans de generar el JSON):
-1. Quantes mètriques vol veure l'usuari? Si en vol DUES de naturalesa diferent (ex: una biològica i una meteorològica) → use_dual_axis=true, metric=primera, secondary_metric=segona. Si en vol UNA → use_dual_axis=false, secondary_metric=null.
-2. Vol comparar entre categories o veure una evolució? Decideix x_axis i chart_type segons x_axis_rules (barres per comparar categories, línies per evolució temporal, dispersió per correlacions).
-3. Vol desglossar per una categoria addicional (espècie o lloc) amb colors? Aplica color_rules per decidir color_by. RECORDA: color_by és per categories, dual axis és per mètriques. MAI els dos alhora.
-4. Com s'ha d'agregar la mètrica? Aplica aggregation_rules (sum per comptatges, mean per meteorologia/índexs, 'auto' si dubtes).
-5. Demana un rànquing limitat ('top N')? Aplica top_n_rules. Acota una franja horària? Aplica hour_filter_rules (filter_hours).
-6. Hi ha filtres explícits d'espècie, lloc o dates? Omple'ls; si no, deixa'ls null (= tots).
-Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, top_n_rules, hour_filter_rules i few_shot_examples del MODEL SEMÀNTIC abans de respondre.
 """
 
-    # Use model from environment variable or default to gemini-2.5-pro
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
-
-    # Shared generation config: enforce JSON output against an explicit proto
-    # schema (NOT the Pydantic class, which breaks the proto conversion) and use a
-    # low temperature for stable, deterministic structured parsing.
-    generation_config = {
-        "response_mime_type": "application/json",
-        "response_schema": _build_response_schema(),
-        "temperature": 0.1,
-    }
+    # Use model from environment variable or default to gemini-3.5-flash
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
     
     # Prepare chat conversation structure for the model
     # Convert past history into Content objects for Google Generative AI
@@ -294,17 +178,20 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
         model = genai.GenerativeModel(
             model_name=model_name,
             system_instruction=system_instruction,
-            generation_config=generation_config
+            generation_config={
+                "response_mime_type": "application/json",
+                "response_schema": QueryAnalysisSchema
+            }
         )
         response = model.generate_content(contents)
     except Exception as primary_error:
         # Check if it is a rate limit, quota, or model access error
         error_msg = str(primary_error).lower()
         is_quota_or_model_error = any(kw in error_msg for kw in ["429", "quota", "limit", "blocked", "not found", "not enabled"])
-
+        
         if is_quota_or_model_error:
-            # FIX: Seqüència de fallback amb noms de model vàlids i actuals.
-            fallback_models = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+            # FIX: Seqüència de fallback més clara i explícita
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
             last_error = primary_error
             for fallback_model in fallback_models:
                 if fallback_model == model_name:
@@ -313,7 +200,10 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
                     model = genai.GenerativeModel(
                         model_name=fallback_model,
                         system_instruction=system_instruction,
-                        generation_config=generation_config
+                        generation_config={
+                            "response_mime_type": "application/json",
+                            "response_schema": QueryAnalysisSchema
+                        }
                     )
                     response = model.generate_content(contents)
                     break  # Si ha funcionat, sortim del bucle
@@ -324,10 +214,10 @@ Consulta sempre les seccions dual_axis_rules, color_rules, aggregation_rules, to
                 raise last_error
         else:
             raise primary_error
-
+    
     # Parse the response back into the Pydantic schema
     try:
-        data = json.loads(_extract_response_text(response))
+        data = json.loads(response.text)
         normalized_data = _normalize_analysis(data)
         return QueryAnalysisSchema(**normalized_data)
     except Exception as e:
@@ -347,14 +237,6 @@ def _normalize_analysis(data: dict) -> dict:
     """Normalize LLM response fields before building Pydantic model."""
     normalized = dict(data)
 
-    # Valid columns/values to guard against LLM hallucinations.
-    valid_metrics = {
-        "total_count", "total_buzz", "OA", "OT", "IA",
-        "temp", "rel_humidity", "wind_speed", "percip_mm"
-    }
-    valid_dimensions = {"species", "location_name"}
-    valid_aggregations = {"sum", "mean", "max", "min", "auto"}
-
     # Ensure optional fields exist and use safe defaults.
     normalized.setdefault("secondary_metric", None)
     normalized["use_dual_axis"] = _normalize_bool(normalized.get("use_dual_axis", False))
@@ -365,54 +247,6 @@ def _normalize_analysis(data: dict) -> dict:
     if normalized["use_dual_axis"] and normalized.get("secondary_metric") == normalized.get("metric"):
         normalized["use_dual_axis"] = False
         normalized["secondary_metric"] = None
-
-    # Validate secondary_metric is a known metric, else drop it.
-    if normalized.get("secondary_metric") not in valid_metrics:
-        normalized["secondary_metric"] = None
-        if normalized["use_dual_axis"]:
-            normalized["use_dual_axis"] = False
-
-    # Normalize color_by: only valid dimensions, and never when dual axis is active.
-    color_by = normalized.get("color_by")
-    if color_by not in valid_dimensions:
-        color_by = None
-    if normalized["use_dual_axis"]:
-        color_by = None
-    # Avoid redundant color when it duplicates the X axis dimension.
-    if color_by is not None and color_by == normalized.get("x_axis"):
-        color_by = None
-    normalized["color_by"] = color_by
-
-    # Normalize aggregation method.
-    aggregation = normalized.get("aggregation", "auto")
-    if not isinstance(aggregation, str) or aggregation.strip().lower() not in valid_aggregations:
-        aggregation = "auto"
-    normalized["aggregation"] = aggregation.strip().lower()
-
-    # Normalize filter_hours: keep only valid integers in 0-23.
-    raw_hours = normalized.get("filter_hours")
-    if isinstance(raw_hours, list) and raw_hours:
-        clean_hours = []
-        for h in raw_hours:
-            try:
-                hv = int(h)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= hv <= 23:
-                clean_hours.append(hv)
-        normalized["filter_hours"] = sorted(set(clean_hours)) or None
-    else:
-        normalized["filter_hours"] = None
-
-    # Normalize top_n: positive integer or None.
-    raw_top_n = normalized.get("top_n")
-    try:
-        top_n = int(raw_top_n) if raw_top_n is not None else None
-    except (TypeError, ValueError):
-        top_n = None
-    if top_n is not None and top_n <= 0:
-        top_n = None
-    normalized["top_n"] = top_n
 
     return normalized
 
@@ -428,29 +262,22 @@ def _fallback_analysis(error: Exception) -> QueryAnalysisSchema:
     )
 
 
-def calculate_indices_for_df(df_target, df_unfiltered, group_cols, weather_agg: str = "mean"):
+def calculate_indices_for_df(df_target, df_unfiltered, group_cols):
     """
     Calculates sampling effort and ecological indices for a grouped dataframe.
     Exactly identical to calculations in the main app to maintain dashboard consistency.
-
-    weather_agg controls how meteorological metrics (temp, rel_humidity, wind_speed,
-    percip_mm) are aggregated ('mean', 'max', 'min'). Counts are always summed because
-    the ecological indices (OA, OT, IA) depend on summed totals.
     """
     if df_target.empty:
         return pd.DataFrame()
-
-    if weather_agg not in ("mean", "max", "min"):
-        weather_agg = "mean"
-
+        
     # Aggregate counts and meteorological metrics per grouping
     agg_dict = {
         "total_count": "sum",
         "total_buzz": "sum",
-        "temp": weather_agg,
-        "rel_humidity": weather_agg,
-        "percip_mm": weather_agg,
-        "wind_speed": weather_agg
+        "temp": "mean",
+        "rel_humidity": "mean",
+        "percip_mm": "mean",
+        "wind_speed": "mean"
     }
     # Use only columns present in the DataFrame to avoid KeyError
     available_agg = {k: v for k, v in agg_dict.items() if k in df_target.columns}
@@ -493,44 +320,11 @@ def calculate_indices_for_df(df_target, df_unfiltered, group_cols, weather_agg: 
     
     return df_grouped
 
-# Default visual style for generated charts. Any subset can be overridden via the
-# `chart_style` argument of apply_filters_and_generate_chart so the user can fully
-# customise the look & feel from the UI without touching the analysis logic.
-DEFAULT_CHART_STYLE = {
-    "height": 420,
-    "color_scheme": "tableau10",   # Altair categorical color scheme for the legend
-    "primary_color": "#1f77b4",    # Single-series color when there is no color breakdown
-    "secondary_color": "#ff7f0e",  # Secondary metric color on dual-axis charts
-    "opacity": 0.85,               # Mark opacity (0.1 - 1.0)
-    "show_points": True,           # Show markers on line/scatter charts
-    "show_grid": True,             # Show Y axis gridlines
-    "log_scale": False,            # Use a logarithmic scale on the Y axis
-    "interactive": True,           # Enable pan & zoom interactions
-    "label_angle": -45,            # X axis label rotation for categorical axes
-    "point_size": 80,              # Marker size for scatter charts
-}
-
-
-def _resolve_chart_style(chart_style: dict | None) -> dict:
-    """Merge a user-provided style dict over the defaults, ignoring None values."""
-    style = dict(DEFAULT_CHART_STYLE)
-    if chart_style:
-        for key, value in chart_style.items():
-            if key in style and value is not None:
-                style[key] = value
-    return style
-
-
-def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSchema, chart_style: dict | None = None):
+def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSchema):
     """
     Applies filters specified by the QueryAnalysisSchema and creates an Altair chart
     suitable for the active dashboard panel.
-
-    chart_style is an optional dict of visual overrides (see DEFAULT_CHART_STYLE)
-    that lets the user customise colors, height, scale, opacity and interactivity.
     """
-    style = _resolve_chart_style(chart_style)
-
     if df.empty:
         return pd.DataFrame(), None, "Sense dades disponibles."
         
@@ -569,14 +363,7 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
             active_filters_txt.append(f"Fins a: {analysis.filter_end_date}")
         except Exception:
             pass
-
-    # 3b. Apply Hour Filter
-    if getattr(analysis, "filter_hours", None):
-        valid_hours = [h for h in analysis.filter_hours if isinstance(h, int) and 0 <= h <= 23]
-        if valid_hours and 'observation_hour' in df_filtered.columns:
-            df_filtered = df_filtered[df_filtered['observation_hour'].isin(valid_hours)]
-            active_filters_txt.append(f"Hores: {', '.join(str(h) + 'h' for h in valid_hours)}")
-
+            
     # 4. If resulting df is empty, return early
     if df_filtered.empty:
         return pd.DataFrame(), None, "Cap registre no coincideix amb els filtres indicats pel xat-bot."
@@ -614,30 +401,18 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         
     # 6. Group and calculate indices
     grouping_cols = [x_col]
-    # Determine color/legend dimension. Prefer the explicit color_by from the LLM;
-    # otherwise fall back to a heuristic that splits by the non-X categorical dimension.
+    # If grouping by location but species are multiple, we might want color by species (and vice-versa)
     color_col = None
     if not (analysis.use_dual_axis and analysis.secondary_metric):
-        explicit_color = getattr(analysis, "color_by", None)
-        if explicit_color in ('species', 'location_name') and explicit_color != x_col:
-            color_col = explicit_color
-        elif explicit_color is None:
-            # Heuristic fallback when the LLM did not specify a color dimension.
-            if x_col != 'species' and (not analysis.filter_species or len(analysis.filter_species) > 1):
-                color_col = 'species'
-            elif x_col != 'location_name' and (not analysis.filter_locations or len(analysis.filter_locations) > 1):
-                color_col = 'location_name'
-        if color_col and color_col not in grouping_cols:
-            grouping_cols.append(color_col)
-
-    # Resolve aggregation method for weather metrics (counts are always summed).
-    weather_agg = "mean"
-    requested_agg = getattr(analysis, "aggregation", "auto") or "auto"
-    if requested_agg in ("max", "min"):
-        weather_agg = requested_agg
-
-    df_grouped = calculate_indices_for_df(df_filtered, df, grouping_cols, weather_agg=weather_agg)
-
+        if x_col != 'species' and (not analysis.filter_species or len(analysis.filter_species) > 1):
+            grouping_cols.append('species')
+            color_col = 'species'
+        elif x_col != 'location_name' and (not analysis.filter_locations or len(analysis.filter_locations) > 1):
+            grouping_cols.append('location_name')
+            color_col = 'location_name'
+        
+    df_grouped = calculate_indices_for_df(df_filtered, df, grouping_cols)
+    
     if df_grouped.empty:
         return df_filtered, None, "Error calculant els índexs per a la visualització."
 
@@ -647,20 +422,6 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         missing_cols += [c for c in [analysis.secondary_metric] if c not in df_grouped.columns]
     if missing_cols:
         return df_grouped, None, f"Les columnes {missing_cols} no s'han pogut calcular per a la visualització."
-
-    # 6b. Apply top_n ranking on categorical X axis if requested.
-    top_n = getattr(analysis, "top_n", None)
-    if top_n and x_col in ('species', 'location_name') and metric_col in df_grouped.columns:
-        if color_col:
-            # Rank the top categories by aggregated metric, then keep their rows.
-            top_categories = (
-                df_grouped.groupby(x_col)[metric_col].sum()
-                .nlargest(top_n).index.tolist()
-            )
-            df_grouped = df_grouped[df_grouped[x_col].isin(top_categories)]
-        else:
-            df_grouped = df_grouped.nlargest(top_n, metric_col)
-        active_filters_txt.append(f"Top {top_n} per {x_label}")
         
     # 7. Generate Altair Chart
     chart = None
@@ -675,22 +436,14 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         x_altair_type = 'O' if x_is_ordinal else 'T'
         x_shorthand = f'{x_col}:{x_altair_type}'
 
-        # X axis styling (categorical axes get a configurable label angle).
-        x_axis_opts = alt.Axis(grid=False, labelAngle=style['label_angle']) if x_is_ordinal else alt.Axis(grid=False)
-        x_encoding = alt.X(x_shorthand, title=x_label, axis=x_axis_opts)
+        x_encoding = alt.X(x_shorthand, title=x_label)
         if sort_order:
-            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order, axis=x_axis_opts)
-
-        # Y axis styling: optional logarithmic scale and configurable gridlines.
-        y_scale = alt.Scale(type='log') if style['log_scale'] else alt.Undefined
-        y_axis_opts = alt.Axis(grid=style['show_grid'], gridColor='gray', gridOpacity=0.3, gridDash=[4, 4])
-        y_encoding = alt.Y(f'{metric_col}:Q', title=metric_label, scale=y_scale, axis=y_axis_opts)
-
-        # Color encoding: apply the chosen categorical scheme, or a single primary color.
-        if color_col:
-            color_encoding = alt.Color(f'{color_col}:N', title="Llegenda", scale=alt.Scale(scheme=style['color_scheme']))
-        else:
-            color_encoding = alt.value(style['primary_color'])
+            x_encoding = alt.X(x_shorthand, title=x_label, sort=sort_order)
+            
+        y_encoding = alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]))
+        
+        # Color encoding
+        color_encoding = alt.Color(f'{color_col}:N', title="Llegenda") if color_col else alt.value('#1f77b4')
         
         # FIX: Tooltip usa x_shorthand per garantir que el tipus coincideix sempre amb l'encoding X
         tooltip_list = [
@@ -699,133 +452,75 @@ def apply_filters_and_generate_chart(df: pd.DataFrame, analysis: QueryAnalysisSc
         ]
         if color_col:
             tooltip_list.append(alt.Tooltip(f'{color_col}:N', title=color_col))
-
-        # Shared label map reused for primary and secondary metrics.
-        metric_labels_map = {
-            "total_count": "Comptatge Total",
-            "total_buzz": "Total Feeding Buzz",
-            "OA": "Ocupació Acústica (OA)",
-            "OT": "Ocupació Tròfica (OT)",
-            "IA": "Intensitat Depredadora (IA)",
-            "temp": "Temperatura (°C)",
-            "rel_humidity": "Humitat Relativa (%)",
-            "percip_mm": "Precipitació (mm)",
-            "wind_speed": "Velocitat del Vent (m/s)"
-        }
-
-        # Resolve dual-axis state once for all chart types.
-        dual_active = bool(analysis.use_dual_axis and analysis.secondary_metric)
-        secondary_metric_col = analysis.secondary_metric if dual_active else None
-        secondary_metric_label = metric_labels_map.get(secondary_metric_col, secondary_metric_col) if dual_active else None
-
-        primary_color = style['primary_color']
-        secondary_color = style['secondary_color']
-        chart_height = style['height']
-        mark_opacity = style['opacity']
-
-        def _build_dual_axis_chart(primary_mark: str):
-            """Build a layered dual-Y-axis chart. primary_mark is 'line' or 'bar'."""
-            base = alt.Chart(df_grouped).encode(x=x_encoding)
-            dual_tooltip_primary = [
-                alt.Tooltip(x_shorthand, title=x_label),
-                alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
-            ]
-            dual_tooltip_secondary = [
-                alt.Tooltip(x_shorthand, title=x_label),
-                alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
-            ]
-            if primary_mark == "bar":
-                layer_primary = base.mark_bar(color=primary_color, opacity=min(mark_opacity, 0.75)).encode(
-                    y=alt.Y(f'{metric_col}:Q', title=metric_label, scale=y_scale, axis=alt.Axis(titleColor=primary_color, grid=style['show_grid'], gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
-                    tooltip=dual_tooltip_primary
-                )
-            else:
-                layer_primary = base.mark_line(color=primary_color, size=2, point=style['show_points'], opacity=mark_opacity).encode(
-                    y=alt.Y(f'{metric_col}:Q', title=metric_label, scale=y_scale, axis=alt.Axis(titleColor=primary_color, grid=style['show_grid'], gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
-                    tooltip=dual_tooltip_primary
-                )
-            layer_secondary = base.mark_line(color=secondary_color, size=2, point=style['show_points'], opacity=mark_opacity).encode(
-                y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor=secondary_color, orient="right", grid=False)),
-                tooltip=dual_tooltip_secondary
-            )
-            return alt.layer(layer_primary, layer_secondary).resolve_scale(y="independent").properties(
-                height=chart_height,
-                title=f"{metric_label} vs {secondary_metric_label} per {x_label}"
-            )
-
+            
         # Draw chart
         if analysis.chart_type == "línies":
-            if dual_active:
-                chart = _build_dual_axis_chart("line")
+            if analysis.use_dual_axis and analysis.secondary_metric:
+                secondary_metric_col = analysis.secondary_metric
+                secondary_metric_label = {
+                    "total_count": "Comptatge Total",
+                    "total_buzz": "Total Feeding Buzz",
+                    "OA": "Ocupació Acústica (OA)",
+                    "OT": "Ocupació Tròfica (OT)",
+                    "IA": "Intensitat Depredadora (IA)",
+                    "temp": "Temperatura (°C)",
+                    "rel_humidity": "Humitat Relativa (%)",
+                    "percip_mm": "Precipitació (mm)",
+                    "wind_speed": "Velocitat del Vent (m/s)"
+                }.get(secondary_metric_col, secondary_metric_col)
+                
+                base = alt.Chart(df_grouped).encode(x=x_encoding)
+                
+                # FIX: Tooltip del dual axis usa x_shorthand consistent
+                dual_tooltip_primary = [
+                    alt.Tooltip(x_shorthand, title=x_label),
+                    alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
+                ]
+                dual_tooltip_secondary = [
+                    alt.Tooltip(x_shorthand, title=x_label),
+                    alt.Tooltip(f'{secondary_metric_col}:Q', title=secondary_metric_label, format=".4f")
+                ]
+
+                line_primary = base.mark_line(color="#1f77b4", size=2, point=True).encode(
+                    y=alt.Y(f'{metric_col}:Q', title=metric_label, axis=alt.Axis(titleColor="#1f77b4", grid=True, gridColor="gray", gridOpacity=0.3, gridDash=[4, 4])),
+                    tooltip=dual_tooltip_primary
+                )
+                
+                line_secondary = base.mark_line(color="#ff7f0e", size=2, point=True).encode(
+                    y=alt.Y(f'{secondary_metric_col}:Q', title=secondary_metric_label, axis=alt.Axis(titleColor="#ff7f0e", orient="right", grid=False)),
+                    tooltip=dual_tooltip_secondary
+                )
+                
+                chart = alt.layer(line_primary, line_secondary).resolve_scale(y="independent").properties(
+                    height=400,
+                    title=f"{metric_label} vs {secondary_metric_label} per {x_label}"
+                )
             else:
-                base_chart = alt.Chart(df_grouped).mark_line(point=style['show_points'], opacity=mark_opacity).encode(
+                base_chart = alt.Chart(df_grouped).mark_line(point=True).encode(
                     x=x_encoding,
                     y=y_encoding,
                     color=color_encoding,
                     tooltip=tooltip_list
                 )
-                chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
-        elif analysis.chart_type == "mapa_calor" and color_col:
-            # Heatmap (mark_rect): X and a second categorical dimension on Y, with the
-            # metric mapped to color intensity. Great for species×hour or location×date.
-            dim_labels = {"species": "Espècie", "location_name": "Localització"}
-            y_dim_label = dim_labels.get(color_col, color_col)
-            sequential_schemes = {"viridis", "plasma", "turbo", "magma", "inferno", "cividis"}
-            heat_scheme = style['color_scheme'] if style['color_scheme'] in sequential_schemes else "viridis"
-            heat_tooltip = [
-                alt.Tooltip(x_shorthand, title=x_label),
-                alt.Tooltip(f'{color_col}:N', title=y_dim_label),
-                alt.Tooltip(f'{metric_col}:Q', title=metric_label, format=".4f")
-            ]
-            base_chart = alt.Chart(df_grouped).mark_rect().encode(
-                x=x_encoding,
-                y=alt.Y(f'{color_col}:N', title=y_dim_label),
-                color=alt.Color(f'{metric_col}:Q', title=metric_label, scale=alt.Scale(scheme=heat_scheme)),
-                tooltip=heat_tooltip
-            )
-            chart = base_chart.properties(height=chart_height, title=f"Mapa de calor: {metric_label} per {x_label} i {y_dim_label}")
-        elif analysis.chart_type == "bombolles":
-            # Bubble / multidimensional chart: X, Y=metric, bubble size=secondary metric
-            # (falls back to the primary metric) and color=optional breakdown dimension.
-            requested_secondary = getattr(analysis, "secondary_metric", None)
-            bubble_size_col = requested_secondary if requested_secondary and requested_secondary in df_grouped.columns else metric_col
-            bubble_size_label = metric_labels_map.get(bubble_size_col, bubble_size_col)
-            bubble_tooltip = list(tooltip_list)
-            if bubble_size_col != metric_col:
-                bubble_tooltip.append(alt.Tooltip(f'{bubble_size_col}:Q', title=bubble_size_label, format=".4f"))
-            base_chart = alt.Chart(df_grouped).mark_circle(opacity=mark_opacity).encode(
-                x=x_encoding,
-                y=y_encoding,
-                size=alt.Size(f'{bubble_size_col}:Q', title=bubble_size_label, scale=alt.Scale(range=[30, 600])),
-                color=color_encoding,
-                tooltip=bubble_tooltip
-            )
-            chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label} (mida: {bubble_size_label})")
+                chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
         elif analysis.chart_type == "dispersió":
-            base_chart = alt.Chart(df_grouped).mark_circle(size=style['point_size'], opacity=mark_opacity).encode(
+            base_chart = alt.Chart(df_grouped).mark_circle(size=80, opacity=0.7).encode(
                 x=x_encoding,
                 y=y_encoding,
                 color=color_encoding,
                 tooltip=tooltip_list
             )
-            chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
-        else: # Default is barres (also used as a safe fallback for mapa_calor without a 2nd dimension)
-            if dual_active:
-                chart = _build_dual_axis_chart("bar")
-            else:
-                base_chart = alt.Chart(df_grouped).mark_bar(opacity=mark_opacity).encode(
-                    x=x_encoding,
-                    y=y_encoding,
-                    color=color_encoding,
-                    tooltip=tooltip_list
-                )
-                chart = base_chart.properties(height=chart_height, title=f"{metric_label} per {x_label}")
-
-        # Enable pan & zoom interactions when requested, then apply title styling.
-        # Heatmaps keep a fixed layout (interactive panning distorts the grid).
-        if style['interactive'] and analysis.chart_type != "mapa_calor":
-            chart = chart.interactive()
-        chart = chart.configure_title(fontSize=16, anchor='start')
+            chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+        else: # Default is barres
+            base_chart = alt.Chart(df_grouped).mark_bar().encode(
+                x=x_encoding,
+                y=y_encoding,
+                color=color_encoding,
+                tooltip=tooltip_list
+            )
+            chart = base_chart.properties(height=400, title=f"{metric_label} per {x_label}")
+            
+        chart = chart.configure_axis(grid=False).configure_title(fontSize=16, anchor='start')
         
     filters_summary = " | ".join(active_filters_txt) + f" | Mètrica: {metric_label}"
     return df_grouped, chart, filters_summary

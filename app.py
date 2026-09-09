@@ -1340,7 +1340,9 @@ def main():
         else:
             import datetime
             import numpy as np
-            import pydeck as pdk
+            import folium
+            from folium.plugins import HeatMap
+            from streamlit_folium import st_folium
 
             all_species = sorted(df_full['species'].dropna().unique().tolist()) if 'species' in df_full.columns else []
             all_locations = sorted(df_full['location_name'].dropna().unique().tolist()) if 'location_name' in df_full.columns else []
@@ -1378,38 +1380,18 @@ def main():
                 map_no_zeros = st.checkbox("No mostrar zeros", value=False, key="map_no_zeros")
                 map_height = st.slider("Alçada del mapa (px)", min_value=520, max_value=1200, value=860, step=20, key="map_height")
 
-                # Force a taller map container and keep map gestures isolated from page scroll.
-                st.markdown(
-                    f"""
-                    <style>
-                    div[data-testid="stDeckGlJsonChart"] {{
-                        height: {int(map_height)}px !important;
-                        overscroll-behavior: contain;
-                    }}
-                    div[data-testid="stDeckGlJsonChart"] iframe {{
-                        height: {int(map_height)}px !important;
-                    }}
-                    div[data-testid="stDeckGlJsonChart"] canvas {{
-                        touch-action: none;
-                    }}
-                    </style>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
                 if map_render_mode == "Bombolles per espècie":
-                    min_radius = st.slider("Radi mínim", min_value=100, max_value=1500, value=250, step=50, key="map_min_radius")
-                    max_radius = st.slider("Radi màxim", min_value=300, max_value=4000, value=1800, step=100, key="map_max_radius")
+                    min_radius = st.slider("Radi mínim (px)", min_value=4, max_value=30, value=6, step=1, key="map_min_radius")
+                    max_radius = st.slider("Radi màxim (px)", min_value=10, max_value=60, value=28, step=1, key="map_max_radius")
                     if max_radius <= min_radius:
-                        max_radius = min_radius + 100
+                        max_radius = min_radius + 4
                         st.caption("S'ha ajustat el radi màxim perquè sigui superior al mínim.")
                     radius_scale = st.selectbox("Escala del radi:", ["Arrel quadrada", "Lineal"], index=0, key="map_radius_scale")
                     bubble_offset = st.checkbox("Separar espècies en la mateixa localització", value=True, key="map_bubble_offset")
                     offset_m = st.slider("Separació (metres)", min_value=0, max_value=800, value=220, step=20, key="map_offset_m")
                 else:
-                    heat_radius = st.slider("Radi de calor (px)", min_value=20, max_value=220, value=95, step=5, key="map_heat_radius")
-                    heat_intensity = st.slider("Intensitat", min_value=0.2, max_value=5.0, value=1.4, step=0.1, key="map_heat_intensity")
-                    heat_threshold = st.slider("Llindar", min_value=0.0, max_value=1.0, value=0.03, step=0.01, key="map_heat_threshold")
+                    heat_radius = st.slider("Radi de calor (px)", min_value=10, max_value=80, value=25, step=1, key="map_heat_radius")
+                    heat_blur = st.slider("Difuminat (blur)", min_value=5, max_value=60, value=15, step=1, key="map_heat_blur")
                     show_heat_points = st.checkbox("Mostrar punts de suport", value=True, key="map_show_heat_points")
                     heat_palette = st.selectbox(
                         "Paleta de colors (calor):",
@@ -1494,44 +1476,32 @@ def main():
                                 map_center_lat = float(df_map["latitude"].mean())
                                 map_center_lon = float(df_map["longitude"].mean())
 
-                                layer = pdk.Layer(
-                                    "ScatterplotLayer",
-                                    data=df_map,
-                                    get_position='[longitude_plot, latitude_plot]',
-                                    get_fill_color='color',
-                                    get_radius='radius',
-                                    pickable=True,
-                                    stroked=True,
-                                    get_line_color=[25, 25, 25],
-                                    line_width_min_pixels=1,
+                                fmap = folium.Map(
+                                    location=[map_center_lat, map_center_lon],
+                                    zoom_start=11,
+                                    tiles="CartoDB positron",
+                                    scrollWheelZoom=False,
+                                    control_scale=True,
                                 )
+                                for _, row in df_map.iterrows():
+                                    hex_color = "#{:02x}{:02x}{:02x}".format(*row["color"][:3])
+                                    folium.CircleMarker(
+                                        # Leaflet expects [lat, lon]; source columns are already in that order.
+                                        location=[row["latitude_plot"], row["longitude_plot"]],
+                                        radius=float(row["radius"]),
+                                        color=hex_color,
+                                        weight=1,
+                                        fill=True,
+                                        fill_color=hex_color,
+                                        fill_opacity=0.75,
+                                        tooltip=(
+                                            f"<b>{row['location_name']}</b><br/>Espècie: {row['species']}"
+                                            f"<br/>{metric_title}: {row['metric_value']}"
+                                        ),
+                                    ).add_to(fmap)
 
-                                tooltip_html = (
-                                    f"<b>{{location_name}}</b><br/>Espècie: {{species}}"
-                                    f"<br/>{metric_title}: {{metric_value}}"
-                                )
-                                deck = pdk.Deck(
-                                    map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-                                    initial_view_state=pdk.ViewState(
-                                        latitude=map_center_lat,
-                                        longitude=map_center_lon,
-                                        zoom=9,
-                                        pitch=0,
-                                    ),
-                                    parameters={
-                                        "scrollZoom": False,
-                                        "dragPan": True,
-                                        "doubleClickZoom": False,
-                                        "touchRotate": False,
-                                    },
-                                    layers=[layer],
-                                    tooltip={
-                                        "html": tooltip_html,
-                                        "style": {"backgroundColor": "#111111", "color": "#ffffff"},
-                                    },
-                                )
-                                st.pydeck_chart(deck, width="stretch")
-                                st.caption("Navegació: arrossega per desplaçar el mapa. El zoom es fa amb controls del trackpad/pellizc al mapa (scroll de pàgina desactivat dins del mapa).")
+                                st_folium(fmap, width=None, height=int(map_height), returned_objects=[], key="map_bubbles")
+                                st.caption("Navegació: arrossega per desplaçar el mapa i fes servir els controls +/- per fer zoom.")
 
                                 render_species_legend(species_color, "Llegenda d'espècies")
 
@@ -1570,71 +1540,54 @@ def main():
                                     norm = pd.Series([0.65] * len(df_map), index=df_map.index)
 
                                 df_map["weight"] = norm + 0.02
-                                df_map["support_radius"] = 140 + 520 * norm
+                                df_map["support_radius"] = 5 + 12 * norm
                                 df_map["metric_value"] = np.round(vals, 4)
 
-                                heat_color_ranges = {
-                                    "Inferno": [[0, 0, 4], [31, 12, 72], [85, 15, 109], [136, 34, 106], [186, 54, 85], [227, 89, 51], [249, 140, 10], [252, 195, 58], [252, 255, 164]],
-                                    "Viridis": [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [109, 205, 89], [180, 222, 44], [253, 231, 37]],
-                                    "Turbo": [[48, 18, 59], [50, 64, 147], [31, 122, 184], [37, 173, 129], [133, 209, 63], [222, 216, 45], [251, 170, 24], [239, 96, 21], [180, 4, 38]],
-                                    "Blau -> Vermell": [[49, 54, 149], [69, 117, 180], [116, 173, 209], [171, 217, 233], [224, 243, 248], [254, 224, 144], [253, 174, 97], [244, 109, 67], [215, 48, 39], [165, 0, 38]],
-                                    "Verd -> Groc -> Vermell": [[0, 104, 55], [26, 152, 80], [102, 189, 99], [166, 217, 106], [217, 239, 139], [255, 255, 191], [254, 224, 139], [253, 174, 97], [244, 109, 67], [215, 48, 39], [165, 0, 38]],
+                                heat_gradients = {
+                                    "Inferno": {0.0: "#000004", 0.25: "#57106e", 0.5: "#bc3754", 0.75: "#f98c0a", 1.0: "#fcffa4"},
+                                    "Viridis": {0.0: "#440154", 0.25: "#3b528b", 0.5: "#21908c", 0.75: "#5dc963", 1.0: "#fde725"},
+                                    "Turbo": {0.0: "#30123b", 0.25: "#1fa5c6", 0.5: "#85d163", 0.75: "#f9c236", 1.0: "#7a0403"},
+                                    "Blau -> Vermell": {0.0: "#313695", 0.25: "#74add1", 0.5: "#ffffbf", 0.75: "#f46d43", 1.0: "#a50026"},
+                                    "Verd -> Groc -> Vermell": {0.0: "#006837", 0.25: "#78c679", 0.5: "#ffffbf", 0.75: "#fd8d3c", 1.0: "#a50026"},
                                 }
-                                color_range = heat_color_ranges.get(heat_palette, heat_color_ranges["Inferno"])
+                                gradient = heat_gradients.get(heat_palette, heat_gradients["Inferno"])
 
                                 map_center_lat = float(df_map["latitude"].mean())
                                 map_center_lon = float(df_map["longitude"].mean())
 
-                                heat_layer = pdk.Layer(
-                                    "HeatmapLayer",
-                                    data=df_map,
-                                    get_position='[longitude, latitude]',
-                                    get_weight='weight',
-                                    intensity=float(heat_intensity),
-                                    threshold=float(heat_threshold),
-                                    radiusPixels=int(heat_radius),
-                                    colorRange=color_range,
-                                    aggregation="SUM",
+                                fmap = folium.Map(
+                                    location=[map_center_lat, map_center_lon],
+                                    zoom_start=11,
+                                    tiles="CartoDB positron",
+                                    scrollWheelZoom=False,
+                                    control_scale=True,
                                 )
 
-                                layers = [heat_layer]
+                                # HeatMap expects [lat, lon, weight] tuples.
+                                heat_data = df_map[["latitude", "longitude", "weight"]].values.tolist()
+                                HeatMap(
+                                    heat_data,
+                                    radius=int(heat_radius),
+                                    blur=int(heat_blur),
+                                    gradient=gradient,
+                                    min_opacity=0.35,
+                                ).add_to(fmap)
+
                                 if show_heat_points:
-                                    support_layer = pdk.Layer(
-                                        "ScatterplotLayer",
-                                        data=df_map,
-                                        get_position='[longitude, latitude]',
-                                        get_fill_color=[18, 18, 18, 95],
-                                        get_radius='support_radius',
-                                        pickable=True,
-                                        stroked=True,
-                                        get_line_color=[245, 245, 245],
-                                        line_width_min_pixels=1,
-                                    )
-                                    layers.append(support_layer)
+                                    for _, row in df_map.iterrows():
+                                        folium.CircleMarker(
+                                            location=[row["latitude"], row["longitude"]],
+                                            radius=float(row["support_radius"]),
+                                            color="#161616",
+                                            weight=1,
+                                            fill=True,
+                                            fill_color="#f5f5f5",
+                                            fill_opacity=0.4,
+                                            tooltip=f"<b>{row['location_name']}</b><br/>{metric_title}: {row['metric_value']}",
+                                        ).add_to(fmap)
 
-                                tooltip_html = f"<b>{{location_name}}</b><br/>{metric_title}: {{metric_value}}"
-                                deck = pdk.Deck(
-                                    map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-                                    initial_view_state=pdk.ViewState(
-                                        latitude=map_center_lat,
-                                        longitude=map_center_lon,
-                                        zoom=9,
-                                        pitch=25,
-                                    ),
-                                    parameters={
-                                        "scrollZoom": False,
-                                        "dragPan": True,
-                                        "doubleClickZoom": False,
-                                        "touchRotate": False,
-                                    },
-                                    layers=layers,
-                                    tooltip={
-                                        "html": tooltip_html,
-                                        "style": {"backgroundColor": "#111111", "color": "#ffffff"},
-                                    },
-                                )
-                                st.pydeck_chart(deck, width="stretch")
-                                st.caption("Navegació: arrossega per desplaçar el mapa. El zoom amb scroll queda desactivat per evitar conflictes amb la pàgina.")
+                                st_folium(fmap, width=None, height=int(map_height), returned_objects=[], key="map_heat")
+                                st.caption("Navegació: arrossega per desplaçar el mapa i fes servir els controls +/- per fer zoom.")
 
                                 st.caption(
                                     f"Escala calor ({heat_palette}) · rang visualitzat: {float(vals.min()):.4f} - {float(vals.max()):.4f}"
