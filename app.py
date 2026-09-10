@@ -576,6 +576,20 @@ def main():
                 if not sp_metrics_sel:
                     sp_metrics_sel = ["Comptatge"]
                 sp_no_zeros = st.checkbox("No mostrar zeros", value=False, key="sp_no_zeros")
+                
+                # Font size control
+                if "sp_font_size" not in st.session_state:
+                    st.session_state["sp_font_size"] = 12
+                st.markdown("Mida de la font")
+                font_col_minus, font_col_value, font_col_plus = st.columns([1, 2, 1])
+                with font_col_minus:
+                    if st.button("-", key="sp_font_minus"):
+                        st.session_state["sp_font_size"] = max(6, st.session_state["sp_font_size"] - 1)
+                with font_col_value:
+                    st.caption(f"{st.session_state['sp_font_size']} pt")
+                with font_col_plus:
+                    if st.button("+", key="sp_font_plus"):
+                        st.session_state["sp_font_size"] = min(36, st.session_state["sp_font_size"] + 1)
             
             with col1_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -636,14 +650,14 @@ def main():
                                             axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
                                             scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
                                     )
-                                    chart_sp = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                    chart_sp = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["sp_font_size"], titleFontSize=st.session_state["sp_font_size"]).configure_legend(labelFontSize=st.session_state["sp_font_size"], titleFontSize=st.session_state["sp_font_size"])
                                 else:
                                     chart_sp = base.mark_line(color=c1_color, point=True).encode(
                                         y=alt.Y(f'{m1_col}:Q', title=m1_title,
                                             axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
                                             scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                         tooltip=['species:N', f'{m1_col}:Q']
-                                    ).properties(height=400).configure_axis(grid=False)
+                                    ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["sp_font_size"], titleFontSize=st.session_state["sp_font_size"]).configure_legend(labelFontSize=st.session_state["sp_font_size"], titleFontSize=st.session_state["sp_font_size"])
                         else:
                             df_sp_grouped = calculate_ecological_indices(df_sp, df_unfiltered, ["species", "location_name"])
                             df_sp_grouped = enrich_grouped_with_env(df_sp, ["species", "location_name"], df_sp_grouped)
@@ -661,7 +675,7 @@ def main():
                                         scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                     color=alt.Color('location_name:N', title='Localització', legend=alt.Legend(orient="bottom", columns=3)),
                                     tooltip=['species:N', 'location_name:N', f'{m1_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["sp_font_size"], titleFontSize=st.session_state["sp_font_size"]).configure_legend(labelFontSize=st.session_state["sp_font_size"], titleFontSize=st.session_state["sp_font_size"])
 
                         if chart_sp is not None:
                             st.altair_chart(chart_sp, width="stretch")
@@ -703,6 +717,20 @@ def main():
                 if not loc_metrics_sel:
                     loc_metrics_sel = ["Comptatge"]
                 loc_no_zeros = st.checkbox("No mostrar zeros", value=False, key="loc_no_zeros")
+                
+                # Font size control
+                if "loc_font_size" not in st.session_state:
+                    st.session_state["loc_font_size"] = 12
+                st.markdown("Mida de la font")
+                font_col_minus, font_col_value, font_col_plus = st.columns([1, 2, 1])
+                with font_col_minus:
+                    if st.button("-", key="loc_font_minus"):
+                        st.session_state["loc_font_size"] = max(6, st.session_state["loc_font_size"] - 1)
+                with font_col_value:
+                    st.caption(f"{st.session_state['loc_font_size']} pt")
+                with font_col_plus:
+                    if st.button("+", key="loc_font_plus"):
+                        st.session_state["loc_font_size"] = min(36, st.session_state["loc_font_size"] + 1)
                     
             with col2_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -763,14 +791,14 @@ def main():
                                             axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
                                             scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
                                     )
-                                    chart_loc = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                    chart_loc = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["loc_font_size"], titleFontSize=st.session_state["loc_font_size"]).configure_legend(labelFontSize=st.session_state["loc_font_size"], titleFontSize=st.session_state["loc_font_size"])
                                 else:
                                     chart_loc = base2.mark_line(color=c1_color, point=True).encode(
                                         y=alt.Y(f'{m1_col}:Q', title=m1_title,
                                             axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
                                             scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                         tooltip=['location_name:N', f'{m1_col}:Q']
-                                    ).properties(height=400).configure_axis(grid=False)
+                                    ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["loc_font_size"], titleFontSize=st.session_state["loc_font_size"]).configure_legend(labelFontSize=st.session_state["loc_font_size"], titleFontSize=st.session_state["loc_font_size"])
                         else:
                             df_loc_grouped = calculate_ecological_indices(df_loc, df_unfiltered, ["location_name", "species"])
                             df_loc_grouped = enrich_grouped_with_env(df_loc, ["location_name", "species"], df_loc_grouped)
@@ -788,7 +816,7 @@ def main():
                                         scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                     color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
                                     tooltip=['location_name:N', 'species:N', f'{m1_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["loc_font_size"], titleFontSize=st.session_state["loc_font_size"]).configure_legend(labelFontSize=st.session_state["loc_font_size"], titleFontSize=st.session_state["loc_font_size"])
 
                         if chart_loc is not None:
                             st.altair_chart(chart_loc, width="stretch")
@@ -830,6 +858,20 @@ def main():
                 if not date_metrics_sel:
                     date_metrics_sel = ["Comptatge"]
                 date_no_zeros = st.checkbox("No mostrar zeros", value=False, key="date_no_zeros")
+                
+                # Font size control
+                if "date_font_size" not in st.session_state:
+                    st.session_state["date_font_size"] = 12
+                st.markdown("Mida de la font")
+                font_col_minus, font_col_value, font_col_plus = st.columns([1, 2, 1])
+                with font_col_minus:
+                    if st.button("-", key="date_font_minus"):
+                        st.session_state["date_font_size"] = max(6, st.session_state["date_font_size"] - 1)
+                with font_col_value:
+                    st.caption(f"{st.session_state['date_font_size']} pt")
+                with font_col_plus:
+                    if st.button("+", key="date_font_plus"):
+                        st.session_state["date_font_size"] = min(36, st.session_state["date_font_size"] + 1)
                     
             with col3_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -895,14 +937,14 @@ def main():
                                             axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
                                             scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
                                     )
-                                    chart_date = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                    chart_date = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["date_font_size"], titleFontSize=st.session_state["date_font_size"]).configure_legend(labelFontSize=st.session_state["date_font_size"], titleFontSize=st.session_state["date_font_size"])
                                 else:
                                     chart_date = base3.mark_line(color=c1_color, point=True).encode(
                                         y=alt.Y(f'{m1_col}:Q', title=m1_title,
                                             axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
                                             scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                         tooltip=['month_year:T', f'{m1_col}:Q']
-                                    ).properties(height=400).configure_axis(grid=False)
+                                    ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["date_font_size"], titleFontSize=st.session_state["date_font_size"]).configure_legend(labelFontSize=st.session_state["date_font_size"], titleFontSize=st.session_state["date_font_size"])
                         else:
                             df_date_grouped = calculate_ecological_indices(df_date, df_unfiltered, ["month_year", "species"])
                             df_date_grouped = enrich_grouped_with_env(df_date, ["month_year", "species"], df_date_grouped)
@@ -920,7 +962,7 @@ def main():
                                         scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                     color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
                                     tooltip=['month_year:T', 'species:N', f'{m1_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["date_font_size"], titleFontSize=st.session_state["date_font_size"]).configure_legend(labelFontSize=st.session_state["date_font_size"], titleFontSize=st.session_state["date_font_size"])
 
                         if chart_date is not None:
                             st.altair_chart(chart_date, width="stretch")
@@ -962,6 +1004,20 @@ def main():
                 if not hour_metrics_sel:
                     hour_metrics_sel = ["Comptatge"]
                 hour_no_zeros = st.checkbox("No mostrar zeros", value=False, key="hour_no_zeros")
+                
+                # Font size control
+                if "hour_font_size" not in st.session_state:
+                    st.session_state["hour_font_size"] = 12
+                st.markdown("Mida de la font")
+                font_col_minus, font_col_value, font_col_plus = st.columns([1, 2, 1])
+                with font_col_minus:
+                    if st.button("-", key="hour_font_minus"):
+                        st.session_state["hour_font_size"] = max(6, st.session_state["hour_font_size"] - 1)
+                with font_col_value:
+                    st.caption(f"{st.session_state['hour_font_size']} pt")
+                with font_col_plus:
+                    if st.button("+", key="hour_font_plus"):
+                        st.session_state["hour_font_size"] = min(36, st.session_state["hour_font_size"] + 1)
                     
             with col4_graf:
                 st.markdown("##### Resultat Gràfic")
@@ -1031,14 +1087,14 @@ def main():
                                             axis=alt.Axis(titleColor=c2_color, orient='right', grid=False),
                                             scale=alt.Scale(domain=dom2) if dom2 else alt.Undefined)
                                     )
-                                    chart_hour = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False)
+                                    chart_hour = alt.layer(line1, line2).resolve_scale(y='independent').properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["hour_font_size"], titleFontSize=st.session_state["hour_font_size"]).configure_legend(labelFontSize=st.session_state["hour_font_size"], titleFontSize=st.session_state["hour_font_size"])
                                 else:
                                     chart_hour = base4.mark_line(color=c1_color, point=True).encode(
                                         y=alt.Y(f'{m1_col}:Q', title=m1_title,
                                             axis=alt.Axis(grid=True, gridColor='gray', gridOpacity=0.3, gridDash=[4, 4]),
                                             scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                         tooltip=['hora:O', f'{m1_col}:Q']
-                                    ).properties(height=400).configure_axis(grid=False)
+                                    ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["hour_font_size"], titleFontSize=st.session_state["hour_font_size"]).configure_legend(labelFontSize=st.session_state["hour_font_size"], titleFontSize=st.session_state["hour_font_size"])
                         else:
                             df_hour_grouped = calculate_ecological_indices(df_hour, df_unfiltered, ["hora", "species"])
                             df_hour_grouped = enrich_grouped_with_env(df_hour, ["hora", "species"], df_hour_grouped)
@@ -1056,13 +1112,13 @@ def main():
                                         scale=alt.Scale(domain=dom1) if dom1 else alt.Undefined),
                                     color=alt.Color('species:N', title='Espècie', legend=alt.Legend(orient="bottom", columns=3)),
                                     tooltip=['hora:O', 'species:N', f'{m1_col}:Q']
-                                ).properties(height=400).configure_axis(grid=False)
+                                ).properties(height=400).configure_axis(grid=False, labelFontSize=st.session_state["hour_font_size"], titleFontSize=st.session_state["hour_font_size"]).configure_legend(labelFontSize=st.session_state["hour_font_size"], titleFontSize=st.session_state["hour_font_size"])
 
                         if chart_hour is not None:
                             st.altair_chart(chart_hour, width="stretch")
 
-        # --- Àrea 6: Mapa de calor multidimensional ---
-        st.subheader("Mapa de Calor Multidimensional")
+        # --- Àrea 6: Mapa d'escalfor multidimensional ---
+        st.subheader("Mapa d'Escalfor Multidimensional")
         st.markdown("Creua dues dimensions (espècie, localització, hora o mes) per detectar patrons d'activitat amb una matriu de color.")
         with st.container(border=True):
             # Selectable dimensions and metrics for the heatmap matrix.
