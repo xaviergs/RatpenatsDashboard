@@ -515,11 +515,11 @@ def main():
     df_full = st.session_state.df_full
 
     # Create Layout Tabs
-    tab_accions, tab_mapa, tab_estatus, tab_syllabus, tab_chat = st.tabs(["🚀 Accions", "🗺️ Mapa", "📊 Estatus", "📖 Syllabus", "💬 Anàlisi Semàntica"])
+    tab_analisis, tab_mapa, tab_estatus, tab_chat, tab_syllabus = st.tabs(["🚀 Anàlisi", "🗺️ Mapa", "📊 Estatus", "💬 Anàlisi Semàntica", "📖 Syllabus"])
     install_tab_persistence()
 
-    # ---------------- TAB 1: ACCIONS ----------------
-    with tab_accions:
+    # ---------------- TAB 1: ANÀLISI ----------------
+    with tab_analisis:
         st.header("Anàlisi i Accions: Comptatge i Buzz")
         st.markdown("Explora els resultats gràfics del comptatge i l'activitat (buzz) segons diferents criteris.")
         
@@ -1060,163 +1060,6 @@ def main():
 
                         if chart_hour is not None:
                             st.altair_chart(chart_hour, width="stretch")
-
-        # --- Àrea 5: Regressió Linial ---
-        st.subheader("Anàlisi de Regressió Linial")
-        with st.container(border=True):
-            col5_filt, col5_graf = st.columns([1, 3])
-            with col5_filt:
-                st.markdown("##### Paràmetres")
-                reg_esp_sel = st.multiselect("Selecciona Espècie(s):", ["Totes"] + all_species, default=["Totes"], key="reg_esp")
-                reg_loc_sel = st.multiselect("Selecciona Localització:", ["Totes"] + all_locations, default=["Totes"], key="reg_loc")
-                # Selector de dates
-                reg_date_method = st.radio("Mètode de selecció de dates:", ["Desplaçador (Slider)", "Calendari Manual", "Només un dia"], horizontal=True, key="reg_date_method")
-                if reg_date_method == "Desplaçador (Slider)":
-                    reg_date_sel = st.slider("Rang de dates:", min_value=min_date_val, max_value=max_date_val, value=(min_date_val, max_date_val), key="reg_date_slider")
-                elif reg_date_method == "Només un dia":
-                    _d = st.date_input("Data:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_date")
-                    reg_date_sel = (_d, _d)
-                else:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        _s = st.date_input("Data inicial:", value=min_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_start")
-                    with c2:
-                        _e = st.date_input("Data final:", value=max_date_val, min_value=min_date_val, max_value=max_date_val, key="reg_end")
-                    reg_date_sel = (_s, _e) if _s <= _e else (_e, _s)
-                
-                st.markdown("##### Variables de Regressió")
-                reg_y_var = st.selectbox("Variable Eix Y (Dependent):", list(METRIC_COLS.keys()), key="reg_y_var")
-
-                reg_x_var = st.selectbox("Variable Eix X (Independent):", list(METRIC_COLS.keys()), key="reg_x_var")
-                reg_x_col = METRIC_COLS.get(reg_x_var, ("total_count", ""))[0]
-                
-                st.markdown("##### Opcions d'Anàlisi")
-                reg_outliers = st.checkbox("Mostra tots els punts (Inclou Outliers)", value=True, key="reg_outliers")
-                reg_no_zeros = st.checkbox("No mostrar zeros", value=False, key="reg_no_zeros")
-                
-            with col5_graf:
-                st.markdown("##### Resultat Gràfic i Estadístiques")
-                if df_full.empty:
-                    st.warning("No s'han trobat dades a la vista bat_observations_full.")
-                else:
-                    df_reg = df_full.copy()
-                    
-                    if "Totes" not in reg_esp_sel and reg_esp_sel:
-                        df_reg = df_reg[df_reg['species'].isin(reg_esp_sel)]
-                        
-                    if "Totes" not in reg_loc_sel and reg_loc_sel:
-                        df_reg = df_reg[df_reg['location_name'].isin(reg_loc_sel)]
-                        
-                    start_d, end_d = reg_date_sel
-                    df_reg = df_reg[(df_reg['observation_date'] >= start_d) & (df_reg['observation_date'] <= end_d)]
-                    
-                    # Calcular OA, OT, IA de cada hora (N=60 per hora de granularitat de minuts)
-                    df_reg['N'] = 60
-                    df_reg['OA'] = df_reg['total_count'] / df_reg['N']
-                    df_reg['OT'] = df_reg['total_buzz'] / df_reg['N']
-                    df_reg['IA'] = df_reg.apply(lambda row: row['total_buzz'] / row['total_count'] if row['total_count'] > 0 else 0.0, axis=1)
-                    
-                    y_col = METRIC_COLS.get(reg_y_var, ("total_count", ""))[0]
-                    x_col = reg_x_col
-                    import numpy as np
-                    
-                    # Eliminar files on X o Y siguin NaN per no falsejar la regressió
-                    df_reg_clean = df_reg.dropna(subset=[x_col, y_col]).copy()
-                    df_reg_clean[x_col] = pd.to_numeric(df_reg_clean[x_col], errors='coerce')
-                    df_reg_clean[y_col] = pd.to_numeric(df_reg_clean[y_col], errors='coerce')
-                    df_reg_clean = df_reg_clean.dropna(subset=[x_col, y_col])
-                    df_reg_clean = df_reg_clean[
-                        np.isfinite(df_reg_clean[x_col]) & np.isfinite(df_reg_clean[y_col])
-                    ]
-
-                    if reg_no_zeros and not df_reg_clean.empty:
-                        df_reg_clean = df_reg_clean[(df_reg_clean[x_col] != 0) & (df_reg_clean[y_col] != 0)]
-                    
-                    if not reg_outliers and not df_reg_clean.empty:
-                        # Mètode IQR (Interquartile Range) per netejar outliers en ambdues variables
-                        for col in [x_col, y_col]:
-                            Q1 = df_reg_clean[col].quantile(0.25)
-                            Q3 = df_reg_clean[col].quantile(0.75)
-                            IQR = Q3 - Q1
-                            if pd.isna(IQR):
-                                continue
-                            lower_bound = Q1 - 1.5 * IQR
-                            upper_bound = Q3 + 1.5 * IQR
-                            df_reg_clean = df_reg_clean[(df_reg_clean[col] >= lower_bound) & (df_reg_clean[col] <= upper_bound)]
-
-                    
-                    if df_reg_clean.empty or len(df_reg_clean) < 2:
-                        st.info("No hi ha prou dades vàlides per aquesta combinació (mínim 2 punts amb valors no nuls).")
-                    else:
-                        import altair as alt
-                        import numpy as np
-                        
-                        # Càlcul de la regressió lineal
-                        x_vals = df_reg_clean[x_col].to_numpy(dtype=float)
-                        y_vals = df_reg_clean[y_col].to_numpy(dtype=float)
-
-                        finite_mask = np.isfinite(x_vals) & np.isfinite(y_vals)
-                        if not finite_mask.all():
-                            df_reg_clean = df_reg_clean.loc[finite_mask].copy()
-                            x_vals = x_vals[finite_mask]
-                            y_vals = y_vals[finite_mask]
-
-                        if len(x_vals) < 2 or np.unique(x_vals).size < 2:
-                            st.info("No hi ha prou variabilitat a l'eix X per calcular una regressió lineal fiable.")
-                            chart_reg = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
-                                x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
-                                y=alt.Y(f'{y_col}:Q', title=reg_y_var),
-                                tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
-                            ).properties(height=350)
-                            st.altair_chart(chart_reg, width="stretch")
-                        else:
-                            try:
-                                # polyfit grau 1 retorna [pendent, intercept]
-                                m, b = np.polyfit(x_vals, y_vals, 1)
-                            except (np.linalg.LinAlgError, ValueError, FloatingPointError):
-                                st.warning("No s'ha pogut ajustar la regressió per inestabilitat numèrica. Es mostren només els punts.")
-                                chart_reg = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
-                                    x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
-                                    y=alt.Y(f'{y_col}:Q', title=reg_y_var),
-                                    tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
-                                ).properties(height=350)
-                                st.altair_chart(chart_reg, width="stretch")
-                            else:
-                                # R2 robust: if one axis is constant, correlation is undefined.
-                                if np.std(x_vals) == 0 or np.std(y_vals) == 0:
-                                    r_squared = 0.0
-                                else:
-                                    corr_matrix = np.corrcoef(x_vals, y_vals)
-                                    corr = corr_matrix[0, 1]
-                                    r_squared = float(corr ** 2) if np.isfinite(corr) else 0.0
-                        
-                                # Afegim la columna de predicció per pintar la línia
-                                df_reg_clean['prediction'] = m * df_reg_clean[x_col] + b
-
-                                # Mostrem els coeficients en caixes de mètriques
-                                c1, c2, c3 = st.columns(3)
-                                c1.metric("Pendent (m)", f"{m:.4f}")
-                                c2.metric("Intercepció (b)", f"{b:.4f}")
-                                c3.metric("Coef. Determinació (R²)", f"{r_squared:.4f}")
-
-                                st.markdown("<br>", unsafe_allow_html=True)
-
-                                # Gràfic de dispersió (Scatter)
-                                scatter = alt.Chart(df_reg_clean).mark_circle(size=60, opacity=0.6, color='#1f77b4').encode(
-                                    x=alt.X(f'{x_col}:Q', title=reg_x_var, scale=alt.Scale(zero=False)),
-                                    y=alt.Y(f'{y_col}:Q', title=reg_y_var),
-                                    tooltip=[f'{x_col}:Q', f'{y_col}:Q', 'species:N', 'location_name:N']
-                                )
-
-                                # Línia de regressió
-                                regression_line = alt.Chart(df_reg_clean).mark_line(color='red', size=3).encode(
-                                    x=f'{x_col}:Q',
-                                    y='prediction:Q'
-                                )
-
-                                chart_reg = (scatter + regression_line).properties(height=350)
-
-                                st.altair_chart(chart_reg, width="stretch")
 
         # --- Àrea 6: Mapa de calor multidimensional ---
         st.subheader("Mapa de Calor Multidimensional")
